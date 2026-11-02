@@ -23,7 +23,6 @@ This is a learning project: documentation first, then code and results.
 
 **Key decisions:** [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md).
 **Plan and done criteria:** [poc.md](poc.md).
-**Study plan:** [learning-plan.md](learning-plan.md).
 **After the PoC:** [skills-plan.md](skills-plan.md).
 
 ## Phases

@@ -7,7 +7,6 @@ quality. Explain every gain with a measurement. The window runs from Mon
 
 - Setup: [getting-started.md](getting-started.md)
 - Decisions: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md)
-- Study plan: [learning-plan.md](learning-plan.md)
 
 The PoC copies how an optimization team ships a model endpoint. You start from a
 baseline, change one variable at a time, and the result has to meet the latency

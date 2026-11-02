@@ -7,8 +7,7 @@ Every command block has a comment above each command saying what it does.
 
 This guide replaces the 1×B300 / Qwen3.8-Flash-Next guide (still in git
 history). Why the plan changed: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md).
-What counts as done: [PoC plan](poc.md). What to study alongside it:
-[learning plan](learning-plan.md).
+What counts as done: [PoC plan](poc.md).
 
 | | |
 |---|---|
@@ -368,5 +367,5 @@ tell capacity, so the node goes back to the pool.
 
 - Fill in the node table once the node is granted.
 - Run the baseline and the quality smoke tests: Week 1 of the [PoC plan](poc.md).
-- Start the analytical model with the memory and roofline worksheet in the
-  [learning plan](learning-plan.md).
+- Start the analytical model: see "Analytical model and profiles" in the
+  [PoC plan](poc.md#analytical-model-and-profiles).
