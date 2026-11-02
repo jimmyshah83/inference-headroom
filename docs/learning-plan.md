@@ -178,6 +178,20 @@ You should be able to answer these out loud by 11-20, using your own numbers:
    workload, and when not?
 8. What would you change to serve the same model on B300?
 
+## After 11-20: turn the PoC into skills
+
+Writing the procedure down as two Claude skills, one for prefill and one for
+decode, tests whether you understood it. A skill has to state:
+
+- when each technique applies
+- how to predict its effect
+- how to measure it
+- what rule decides whether to keep it
+
+That is the repeatable bring-up an optimization team needs. See the
+[skills plan](skills-plan.md) for the design, the build steps (starting
+Mon 11-23) and how to test them.
+
 ## What you'll have to show
 
 - [ ] This repo: reproducible setup, PoC plan, ADR, experiment log, results CSVs
@@ -186,3 +200,5 @@ You should be able to answer these out loud by 11-20, using your own numbers:
 - [ ] The packaged final configuration with its measured targets
 - [ ] The write-up and the readout slides or notes
 - [ ] Two day-0 bring-up worksheets for other models
+- [ ] After 11-20: the `prefill-optimization` and `decode-optimization` skills,
+  tested on a model or GPU the PoC didn't use

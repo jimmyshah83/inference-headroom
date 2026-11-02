@@ -24,6 +24,7 @@ This is a learning project: documentation first, then code and results.
 **Key decisions:** [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md).
 **Plan and done criteria:** [poc.md](poc.md).
 **Study plan:** [learning-plan.md](learning-plan.md).
+**After the PoC:** [skills-plan.md](skills-plan.md).
 
 ## Phases
 
@@ -32,6 +33,7 @@ This is a learning project: documentation first, then code and results.
 | 1 | Bring-up and baseline (week 1) | Work out the memory plan from `config.json` before touching the GPUs. Bring up two TP4 replicas from the recipe. Run the smoke and tool-call tests and the baseline SWE-bench slice. Predict, then measure, the fixed-shape sweeps. Analyze the agent traces | §1.4, §2.4, Ch. 3, §4.3.1, §4.5 |
 | 2 | Optimization loop (week 2) | Run the multi-turn and agent-trace benchmarks. One variable at a time: parallel layout, Engram placement, NUMA pinning, DSpark speculative decoding, scheduler token budget, prefix caching. Take two profiles with time attribution | §5.2–5.5 |
 | 3 | Quality, packaging, write-up (week 3) | Choose the final configuration. Re-run the quality gates on it (SWE-bench paired comparison, DSpark lossless check). Package the endpoint. Write the results up and present them. Release the node | §5.1.3, §7.1, §7.2.1, §7.4.2 |
+| 4 | Skills (after 2026-11-20) | Turn the PoC's procedure into two shareable Claude skills, `prefill-optimization` and `decode-optimization`. Test them on a model or GPU the PoC didn't use. See the [skills plan](skills-plan.md) | §2.4, §5.5 |
 
 ## Done when
 

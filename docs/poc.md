@@ -225,19 +225,33 @@ batch-dependent numerics, which is expected and worth understanding, or a bug.
 ## Optimization experiments
 
 Run them in this order. For each one, write a prediction from the analytical
-model before you measure, then the result and the explanation. Log them in
-`docs/experiments.md`.
+model before you measure, then the result and the explanation. The Phase column
+says which future skill the experiment feeds ([skills plan](skills-plan.md)).
 
-| # | Variable | Baseline → variant | What to look for |
-|---|---|---|---|
-| O1 | Parallel layout | 2×TP4 → 1×TP8 → DEP8 (`--data-parallel-size 8 --enable-expert-parallel`) | Per-GPU throughput vs per-user speed. TP8 halves per-GPU weights but doubles all-reduce traffic. The recipe lists DEP only for Blackwell, so TP8 and DEP8 are **unverified on H200** |
-| O2 | Engram placement | offload on → off (TP8 only, where HBM may allow it) | What host lookups cost per decode step, and how much KV cache they buy |
-| O3 | NUMA pinning | none → each replica's container bound to its GPUs' socket (`--cpuset-cpus`, `--cpuset-mems`) | Step time and tail latency, given the per-step Engram reads from host memory |
-| O4 | Speculative decoding | off → DSpark, 5 tokens, adaptive verification (`--speculative-config` from the recipe); then 1–5 tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1) |
-| O5 | Scheduler token budget | default → `--max-num-batched-tokens` 2k / 8k / 16k; `--max-num-seqs`; `--max-cudagraph-capture-size` ≥ batch × (1 + 5 drafts) | TTFT vs inter-token latency: prefill chunks interfering with decode (Kiely §5.5) |
-| O6 | Prefix caching | on → off (B2 and B3 only) | How much of the agent's TTFT the cache is saving |
-| O7 | KV cache dtype | auto → `--kv-cache-dtype fp8`, if the image accepts it for this model on Hopper | KV capacity vs accuracy (gate A2) |
-| O8 | Disaggregation (stretch) | 2×TP4 aggregated → 1 prefill + 1 decode, TP4 each, KV over NIXL with `vllm-router` | TTFT and inter-token latency on B3. Verified only on GB200 so far; Kiely §5.5.2 says it pays off only for prefill-heavy, high-volume traffic |
+| # | Phase | Variable | Baseline → variant | What to look for |
+|---|---|---|---|---|
+| O1 | both | Parallel layout | 2×TP4 → 1×TP8 → DEP8 (`--data-parallel-size 8 --enable-expert-parallel`) | Per-GPU throughput vs per-user speed. TP8 halves per-GPU weights but doubles all-reduce traffic. The recipe lists DEP only for Blackwell, so TP8 and DEP8 are **unverified on H200** |
+| O2 | decode | Engram placement | offload on → off (TP8 only, where HBM may allow it) | What host lookups cost per decode step, and how much KV cache they buy |
+| O3 | decode | NUMA pinning | none → each replica's container bound to its GPUs' socket (`--cpuset-cpus`, `--cpuset-mems`) | Step time and tail latency, given the per-step Engram reads from host memory |
+| O4 | decode | Speculative decoding | off → DSpark, 5 tokens, adaptive verification (`--speculative-config` from the recipe); then 1–5 tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1) |
+| O5 | both | Scheduler token budget | default → `--max-num-batched-tokens` 2k / 8k / 16k; `--max-num-seqs`; `--max-cudagraph-capture-size` ≥ batch × (1 + 5 drafts) | TTFT vs inter-token latency: prefill chunks interfering with decode (Kiely §5.5) |
+| O6 | prefill | Prefix caching | on → off (B2 and B3 only) | How much of the agent's TTFT the cache is saving |
+| O7 | decode | KV cache dtype | auto → `--kv-cache-dtype fp8`, if the image accepts it for this model on Hopper | KV capacity vs accuracy (gate A2) |
+| O8 | prefill | Disaggregation (stretch) | 2×TP4 aggregated → 1 prefill + 1 decode, TP4 each, KV over NIXL with `vllm-router` | TTFT and inter-token latency on B3. Verified only on GB200 so far; Kiely §5.5.2 says it pays off only for prefill-heavy, high-volume traffic |
+
+Log each experiment in `docs/experiments.md` using the same fields every time.
+The skills are written from these entries.
+
+```
+## O<n>: <variable> (phase: prefill | decode | both)
+- Conditions: image, model revision, layout, workload, concurrency, cache state
+- Flags changed: <baseline> → <variant>
+- Prediction (and how it was made): …
+- Command: …
+- Result (mean ± spread, 3 repeats): …
+- Explanation (profile or metric that shows why): …
+- Decision rule learned: "use X when …, avoid when …"
+```
 
 The **final configuration** combines whichever variants won, all measured
 together. Combinations interact, so measure them; don't add up the individual
@@ -301,6 +315,9 @@ gains.
 
 **Optional, if time allows:** O8 disaggregation, and a comparison with the
 same model on B300 at the same targets.
+
+**After the PoC:** turn the experiment log into two shareable Claude skills,
+one for prefill and one for decode. See the [skills plan](skills-plan.md).
 
 ## Schedule
 
