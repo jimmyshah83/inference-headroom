@@ -11,7 +11,9 @@
 ## Context
 
 - **Hardware.** B300 capacity is scarce. One 8×H200 node was requested for
-  Nov 2–20.
+  Nov 2–20 and approved on 2026-11-02 in the Production tf-us1 project
+  (`us-central1`). It runs in its own network, apart from the project's
+  production resources ([getting started](../getting-started.md#prerequisites-a-network-and-subnet-for-the-node)).
 - **Use case.** It changes from generic decode measurement to a **coding
   agent**: multi-turn, tool-calling, long contexts with heavy prefix reuse.
 - **Purpose.** The project is now a learning PoC for inference optimization:

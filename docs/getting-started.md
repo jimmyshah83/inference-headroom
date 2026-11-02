@@ -1,9 +1,12 @@
 # Getting started
 
-How to reach the project's 8×H200 node and serve **DeepSeek-V4.1-Flash-1017**
-with vLLM for the coding-agent PoC. The node was requested on 2026-11-02 and is
-held until **Fri 2026-11-20**. None of the steps below have been run on it yet.
-Every command block has a comment above each command saying what it does.
+How to create the project's 8×H200 node, reach it, and serve
+**DeepSeek-V4.1-Flash-1017** with vLLM for the coding-agent PoC. Capacity
+approved one node on 2026-11-02 in the **Production tf-us1** project (region
+`us-central1`), to be held until **Fri 2026-11-20**. The node doesn't exist
+yet: you create it, after the network [prerequisites](#prerequisites-a-network-and-subnet-for-the-node).
+None of the steps below have been run yet. Every command block has a comment
+above each command saying what it does.
 
 This guide replaces the 1×B300 / Qwen3.8-Flash-Next guide (still in git
 history). Why the plan changed: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md).
@@ -11,8 +14,10 @@ What counts as done: [PoC plan](poc.md).
 
 | | |
 |---|---|
-| Node | `<instance-id>` (Nebius, platform `gpu-h200-sxm`, preset `8gpu-128vcpu-1600gb`). Fill in when granted |
-| Region | `<region>` (H200 runs in `eu-north1`, `eu-west1`, `us-central1`) |
+| Project | Production tf-us1 (`<project-id>`), in the Token Factory tenant. It is a production project, so the node gets a network of its own |
+| Region | `us-central1` |
+| Network and subnet | `h200-poc-network` (`<network-id>`) and `h200-poc-subnet` (`<subnet-id>`). Fill in after P2 |
+| Node | `<instance-id>` (Nebius, platform `gpu-h200-sxm`, preset `8gpu-128vcpu-1600gb`). Fill in after P4 |
 | SSH user | `<ssh-user>` |
 | SSH key (on the Mac) | `~/.ssh/<key>` |
 | GPUs | 8× NVIDIA H200 SXM: 141 GB HBM3e and 4.8 TB/s each (1,128 GB per node), NVLink 900 GB/s |
@@ -21,20 +26,44 @@ What counts as done: [PoC plan](poc.md).
 | Model | `deepseek-ai/DeepSeek-V4.1-Flash-1017`, revision `1bae0e1088993b9b82de08f59de5be5a34e42170` (~511 GB) |
 | Layout | Two replicas, each TP4 with the Engram tables offloaded to host RAM (the vLLM recipe's H200 default). In the PD disaggregation phase, the same two GPU groups become one prefill engine and one decode engine |
 
-## On the Mac
+## Prerequisites: a network and subnet for the node
 
-### 1. Pick the Nebius CLI profile
+Do these once, on the Mac, before you create the node. They follow Nebius's
+guide [Isolating Nebius AI Cloud resources in separate networks](https://docs.nebius.com/vpc/networking/isolation#create-net).
 
-Which profile works depends on where capacity places the node:
+Why the node needs its own network:
 
-- **Token Factory tenant** (for example, the Architects project): the default
-  profile `tokenfactory-solutions-architects` should see it.
-- **AI Cloud project**: create an AI Cloud profile, as for the old B300 VM. Run
-  this in your own terminal, because it opens a browser to log in.
+- **A VM must be created in a subnet, and none was visible in this project.**
+  Nebius normally gives each new project a `default-network` and a
+  `default-subnet`
+  ([VPC overview](https://docs.nebius.com/vpc/overview#default-virtual-networks-resources)).
+  On 2026-11-02 this project listed no networks, subnets or IP pools, possibly
+  because the account couldn't see them.
+- **Isolation from production.** Resources in the same network can reach each
+  other over private IP addresses. In a separate network, the PoC node can't
+  reach the project's production resources over private addresses, and they
+  can't reach it.
+- **The choice is permanent.** A VM can't be moved to another network or
+  subnet after it is created. To change it, you delete and recreate the VM.
+
+### P1. Check CLI access to the project
+
+You need:
+
+- The Nebius CLI, installed and configured. Check with `nebius version`.
+- A profile that can see the project. On 2026-11-02 the `ai-cloud` profile
+  (signed in through `auth.nebius.com`) could see Production tf-us1. The
+  `tokenfactory-solutions-architects` profile listed no tenants at all.
+- At least the `editor` role in the project, for example through the default
+  `editors` group. Check this under
+  [Administration → IAM](https://console.nebius.com/iam) in the web console.
+  Reading the project doesn't prove you can write to it. If P2 fails with a
+  permission error, ask the capacity team for editor access to the project.
 
 ```bash
-# Create a profile that signs in through AI Cloud (auth.nebius.com) and
-# defaults to the project that owns the node. It becomes the active profile.
+# Create a profile that signs in through AI Cloud (auth.nebius.com). Skip this
+# if "nebius profile list" already shows ai-cloud. Run it in your own terminal,
+# because it opens a browser to log in.
 nebius profile create --profile ai-cloud \
   --endpoint api.nebius.cloud \
   --federation-endpoint auth.nebius.com \
@@ -42,16 +71,157 @@ nebius profile create --profile ai-cloud \
 
 # List profiles; the active one is marked [default].
 nebius profile list
+
+# The project the node goes in (Production tf-us1).
+export PROJECT_ID=<project-id>
+
+# Confirm the profile can read the project. It should print
+# "Production tf-us1" and "us-central1".
+nebius --profile ai-cloud iam project get --id $PROJECT_ID --format json \
+  | jq -r '[.metadata.name, .status.region] | @tsv'
+
+# List the networks, subnets and IP pools the project already has.
+# On 2026-11-02 all three lists were empty ("{}"). That may mean the account
+# couldn't see them, not that the project had none.
+nebius --profile ai-cloud vpc network list --parent-id $PROJECT_ID
+nebius --profile ai-cloud vpc subnet list --parent-id $PROJECT_ID
+nebius --profile ai-cloud vpc pool list --parent-id $PROJECT_ID
 ```
 
-To use a different profile for one command, add `--profile <name>` to it.
+The commands pass `--profile` and `--parent-id` explicitly, so nothing is
+created by accident in whatever project the profile defaults to.
+
+### P2. Create the network and the subnet
+
+Every network must contain at least one subnet. Name both so the project's
+owners can tell what they are for.
+
+```bash
+# Create the PoC network in the project and save its ID.
+export NETWORK_ID=$(nebius --profile ai-cloud vpc network create \
+  --parent-id $PROJECT_ID \
+  --name h200-poc-network \
+  --format jsonpath='{.metadata.id}')
+
+# Create a subnet in that network and save its ID. By default, a subnet takes
+# its private and public IP addresses from the network's pools.
+export SUBNET_ID=$(nebius --profile ai-cloud vpc subnet create \
+  --parent-id $PROJECT_ID \
+  --network-id $NETWORK_ID \
+  --name h200-poc-subnet \
+  --format jsonpath='{.metadata.id}')
+
+# Print both IDs. If either is empty, the command that should have set it
+# failed; read the error it printed.
+echo "network $NETWORK_ID  subnet $SUBNET_ID"
+```
+
+Like Nebius's example, these commands don't set IP pools or CIDR blocks. P3
+shows which address ranges the subnet received.
+
+**Known failure (2026-11-02).** The network create failed with:
+
+```
+Error: rpc error: code = PermissionDenied desc = Permission denied to <project-id>
+  Permission denied PermissionDenied: service VPC API, resource ID: <project-id>
+```
+
+The account could read the project but held no role that allows writing to
+it. The only roles granted on the tenant belong to the `admins`, `editors`,
+`auditors` and `viewers` groups, and the account wasn't in any of them. The
+fix has to come from the capacity team or the project's admins: the `editor`
+role on the project, or someone else creating the network and node.
+
+### P3. Check that the subnet is ready
+
+```bash
+# Print the subnet's state and its private and public address ranges.
+nebius --profile ai-cloud vpc subnet get --id $SUBNET_ID --format json \
+  | jq '.status | {state, ipv4_private_cidrs, ipv4_public_cidrs}'
+```
+
+Expect:
+
+- `"state": "READY"`
+- at least one private CIDR block. Nebius documents `10.96.0.0/13` as the
+  default private range in `us-central1`
+  ([private ranges per region](https://docs.nebius.com/vpc/addressing/available-addresses)).
+- at least one public CIDR block
+
+If `ipv4_public_cidrs` is empty, the node can't get a public IP address, and
+SSH from the Mac (steps 2–4) won't work. Ask the project's owners for a public
+pool rather than creating pools yourself.
+
+### P4. Save the IDs, then create the node in the subnet
+
+```bash
+# Save the IDs in a file outside the repo, so a new terminal can load them
+# (step 1).
+cat > ~/.h200-poc.env <<EOF
+export PROJECT_ID=$PROJECT_ID
+export NETWORK_ID=$NETWORK_ID
+export SUBNET_ID=$SUBNET_ID
+EOF
+```
+
+When you create the node, put it in `h200-poc-subnet` and give it a public IP
+address. **You can't change the subnet afterwards.**
+
+- **Web console:** in the VM's network settings, choose `h200-poc-subnet` and
+  keep a public IP address.
+- **CLI:** add this parameter to `nebius compute instance create`:
+
+  ```
+  --network-interfaces "[{\"name\": \"eth0\", \"subnet_id\": \"$SUBNET_ID\", \"ip_address\": {}, \"public_ip_address\": {}}]"
+  ```
+
+  `"public_ip_address": {}` gives the node a dynamic public IP, which can
+  change when the node is stopped and started (step 2). Use
+  `{"static": true}` instead to keep the address fixed
+  ([creating a VM](https://docs.nebius.com/compute/virtual-machines/manage#create-a-vm)).
+
+Once the node exists, add its ID to `~/.h200-poc.env`:
+
+```bash
+# Append the node's ID to the saved IDs.
+echo 'export INSTANCE_ID=<instance-id>' >> ~/.h200-poc.env
+```
+
+Notes:
+
+- **No GPU cluster is needed.** A GPU cluster connects several VMs over
+  InfiniBand ([GPU clusters](https://docs.nebius.com/compute/clusters/gpu/)).
+  This PoC is one VM, and its 8 GPUs talk to each other over NVLink.
+- **If you use Managed Kubernetes instead of a VM,** pass
+  `--control-plane-subnet-id $SUBNET_ID` when you create the cluster.
+- **Firewall.** Every network has a default security group that allows all
+  ingress and egress traffic, and every VM in the network joins it
+  ([security groups](https://docs.nebius.com/vpc/security-groups/overview#default-security-groups)).
+  Step 10 publishes vLLM's ports on the node's loopback only, so they stay
+  private. Anything else that listens on all interfaces is reachable from the
+  internet.
+
+## On the Mac
+
+### 1. Load the IDs and pick the profile
+
+```bash
+# Load the project, network, subnet and node IDs saved in P4.
+source ~/.h200-poc.env
+
+# List profiles; the active one is marked [default]. It should be ai-cloud.
+nebius profile list
+```
+
+If `ai-cloud` isn't the active profile, add `--profile ai-cloud` to every
+`nebius` command below.
 
 ### 2. Find the node's public IP
 
 ```bash
 # Read the node's details as JSON and print the address of its first network
 # interface, with the "/32" suffix removed.
-nebius compute instance get --id <instance-id> --format json \
+nebius compute instance get --id $INSTANCE_ID --format json \
   | jq -r '.status.network_interfaces[0].public_ip_address.address | split("/")[0]'
 ```
 
@@ -357,15 +527,31 @@ When a session ends, stop the node from the Mac so it isn't billed while idle:
 
 ```bash
 # Stop the node. Bring it back with "nebius compute instance start --id …".
-nebius compute instance stop --id <instance-id>
+nebius compute instance stop --id $INSTANCE_ID
 ```
 
 Release the node on or before **Fri 2026-11-20**. If the PoC finishes early,
-tell capacity, so the node goes back to the pool.
+tell capacity, so the node goes back to the pool. To release it, delete the
+node and then the network you created for it:
+
+```bash
+# Delete the node. Its GPUs go back to the pool.
+nebius compute instance delete --id $INSTANCE_ID
+
+# List the project's disks. Delete any the node left behind, such as a data
+# disk for the checkpoint, with "nebius compute disk delete --id …".
+nebius compute disk list --parent-id $PROJECT_ID
+
+# Delete the subnet, then the network. The node used the subnet, and the
+# subnet belongs to the network, so delete them in this order.
+nebius vpc subnet delete --id $SUBNET_ID
+nebius vpc network delete --id $NETWORK_ID
+```
 
 ## Next
 
-- Fill in the node table once the node is granted.
+- Do the network prerequisites (P1–P4), create the node, and fill in the
+  table at the top.
 - Run the baseline and the quality smoke tests: Week 1 of the [PoC plan](poc.md).
 - Start the analytical model: see "Analytical model and profiles" in the
   [PoC plan](poc.md#analytical-model-and-profiles).
