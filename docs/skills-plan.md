@@ -75,7 +75,7 @@ are long or agentic, or prefill limits capacity."
 6. Run the quality gates after any change that affects numerics.
 7. Report the results with their conditions, then give a recommendation.
 
-**Seeded by PoC experiments:** O6 and O8, and the prefill side of O1 and O5.
+**Seeded by PoC experiments:** O6, O5 and O8, and the prefill side of O1.
 
 ## Skill 2: `decode-optimization`
 
@@ -111,8 +111,8 @@ tokens-per-second-per-user target instead of a TTFT target.
    an eval slice after any precision change.
 6. Report the results with their conditions, then give a recommendation.
 
-**Seeded by PoC experiments:** O2, O3, O4 and O7, and the decode side of O1 and
-O5 (`--max-num-seqs`, CUDA graph sizes).
+**Seeded by PoC experiments:** O1, O9, O4, O2, O3 and O7, and the decode-side
+effect of O5.
 
 ## Shared protocol (`references/protocol.md`, in both skills)
 

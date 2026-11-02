@@ -223,26 +223,95 @@ batch-dependent numerics, which is expected and worth understanding, or a bug.
 
 ## Optimization experiments
 
-Run them in this order. For each one, write a prediction from the analytical
-model before you measure, then the result and the explanation. The Phase column
-says which future skill the experiment feeds ([skills plan](skills-plan.md)).
+There are three optimization phases, in this order:
 
-| # | Phase | Variable | Baseline → variant | What to look for |
-|---|---|---|---|---|
-| O1 | both | Parallel layout | 2×TP4 → 1×TP8 → DEP8 (`--data-parallel-size 8 --enable-expert-parallel`) | Per-GPU throughput vs per-user speed. TP8 halves per-GPU weights but doubles all-reduce traffic. The recipe lists DEP only for Blackwell, so TP8 and DEP8 are **unverified on H200** |
-| O2 | decode | Engram placement | offload on → off (TP8 only, where HBM may allow it) | What host lookups cost per decode step, and how much KV cache they buy |
-| O3 | decode | NUMA pinning | none → each replica's container bound to its GPUs' socket (`--cpuset-cpus`, `--cpuset-mems`) | Step time and tail latency, given the per-step Engram reads from host memory |
-| O4 | decode | Speculative decoding | off → DSpark, 5 tokens, adaptive verification (`--speculative-config` from the recipe); then 1–5 tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1) |
-| O5 | both | Scheduler token budget | default → `--max-num-batched-tokens` 2k / 8k / 16k; `--max-num-seqs`; `--max-cudagraph-capture-size` ≥ batch × (1 + 5 drafts) | TTFT vs inter-token latency: prefill chunks interfering with decode (Kiely §5.5) |
-| O6 | prefill | Prefix caching | on → off (B2 and B3 only) | How much of the agent's TTFT the cache is saving |
-| O7 | decode | KV cache dtype | auto → `--kv-cache-dtype fp8`, if the image accepts it for this model on Hopper | KV capacity vs accuracy (gate A2) |
-| O8 | prefill | Disaggregation (stretch) | 2×TP4 aggregated → 1 prefill + 1 decode, TP4 each, KV over NIXL with `vllm-router` | TTFT and inter-token latency on B3. Verified only on GB200 so far; Kiely §5.5.2 says it pays off only for prefill-heavy, high-volume traffic |
+1. **Prefill:** TTFT and prefill cost.
+2. **Decode:** inter-token latency, tokens/s per user, and throughput per GPU.
+3. **PD disaggregation:** splits the node's two GPU groups into a prefill
+   engine and a decode engine, and builds on the winners of the first two
+   phases.
+
+Within each phase, run the experiments in the order listed. For each one, write
+a prediction from the analytical model before you measure, then the result and
+the explanation. Each phase also feeds one of the future skills
+([skills plan](skills-plan.md)).
+
+### Prefill optimization
+
+| # | Variable | Baseline → variant | What to look for |
+|---|---|---|---|
+| O6 | Prefix caching | on → off (B2 and B3 only) | How much of the agent's TTFT the cache is saving. Do this first, because it sets how much real prefill is left to optimize |
+| O5 | Chunked-prefill token budget | default → `--max-num-batched-tokens` 2k / 8k / 16k | TTFT vs inter-token latency: large chunks finish prefills sooner but stall the decodes sharing the batch (Kiely §5.5). Record both metrics, because this knob affects decode too |
+
+### Decode optimization
+
+| # | Variable | Baseline → variant | What to look for |
+|---|---|---|---|
+| O1 | Parallel layout | 2×TP4 → 1×TP8 → DEP8 (`--data-parallel-size 8 --enable-expert-parallel`) | Per-GPU throughput vs per-user speed. TP8 halves per-GPU weights but doubles all-reduce traffic. The recipe lists DEP only for Blackwell, so TP8 and DEP8 are **unverified on H200**. The layout also changes prefill speed; record TTFT too |
+| O9 | Batch and CUDA graph sizes | default → `--max-num-seqs` 32 / 64 / 128; `--max-cudagraph-capture-size` ≥ batch × (1 + 5 drafts) | Where per-user speed falls off as the batch grows, and whether decode steps fall outside the captured graphs |
+| O4 | Speculative decoding | off → DSpark, 5 tokens, adaptive verification (`--speculative-config` from the recipe); then 1–5 tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1) |
+| O2 | Engram placement | offload on → off (TP8 only, where HBM may allow it) | What host lookups cost per decode step, and how much KV cache they buy |
+| O3 | NUMA pinning | none → each replica's container bound to its GPUs' socket (`--cpuset-cpus`, `--cpuset-mems`) | Step time and tail latency, given the per-step Engram reads from host memory |
+| O7 | KV cache dtype | auto → `--kv-cache-dtype fp8`, if the image accepts it for this model on Hopper | KV capacity vs accuracy (gate A2) |
+
+### PD disaggregation
+
+**O8. Compare two layouts on the same 8 GPUs:**
+
+- **Aggregated (baseline):** two TP4 replicas, each doing both prefill and
+  decode.
+- **1P1D:** one TP4 prefill engine on GPUs 0–3 and one TP4 decode engine on
+  GPUs 4–7. The prefill engine sends each request's KV cache to the decode
+  engine over NVLink through vLLM's NIXL connector, behind
+  `vllm-router --vllm-pd-disaggregation`.
+
+Use the [recipe's PD commands](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash)
+with these settings:
+
+- the node's two GPU groups in place of its two GB200 trays
+- a separate `VLLM_NIXL_SIDE_CHANNEL_PORT` for each engine
+- each engine's flags carried over from the winners of the prefill and decode
+  phases
+- if DSpark won O4, DSpark in **both** engines, so the KV cache stays
+  compatible
+
+The recipe verified 1P1D only on GB200 NVL4. On 8-GPU nodes it uses a whole
+node per role, so **one-node 1P1D on H200 is unverified.** That is also open
+question 6 in ADR 0002.
+
+- **Predict first:**
+  - **KV transfer cost.** This model's KV is small: about 890 bytes per token
+    by DeepSeek's figure, or about 2 KB by vLLM's measured pool. A 100k-token
+    prompt is then roughly 0.1–0.2 GB, which should take well under a
+    millisecond over NVLink. If so, transfer is not the cost to worry about.
+  - **Decode capacity.** The real cost is that 1P1D has one decode engine
+    where the aggregated layout has two. It wins only if removing prefill
+    interference from decode is worth more than the lost decode capacity.
+  - **Effect of the cache.** Coding-agent turns are mostly prefix-cache hits,
+    so effective prefill per turn may be small. Expect gains mainly in
+    inter-token latency during bursts of cold, long prompts.
+- **Measure:**
+  - B3 at concurrency 1–32 and B1 at 64k/2k, against both target profiles.
+  - TTFT and inter-token latency at p50, p90 and p99. Look at the tail
+    inter-token latency while long prefills run.
+  - KV transfer time.
+  - Prefill-engine and decode-engine utilization. A large imbalance means 1:1
+    is the wrong ratio for this traffic.
+- **Decision rule:** adopt 1P1D for a profile only if it improves goodput or
+  p99 inter-token latency there without cutting async throughput per GPU by
+  more than 10%. That threshold is a judgment call. Check the result against
+  Kiely §5.5.2's criteria (p. 149).
+- **Conditional disaggregation:** check whether `vllm-router` can send
+  short or cache-hit prefills straight to the decode engine (Kiely §5.5.1,
+  p. 148). If it can't, record that as a limitation.
+- **If 1P1D won't start within half a day,** record the failure mode (error,
+  versions, flags) and move on. A documented negative result still counts.
 
 Log each experiment in `docs/experiments.md` using the same fields every time.
 The skills are written from these entries.
 
 ```
-## O<n>: <variable> (phase: prefill | decode | both)
+## O<n>: <variable> (phase: prefill | decode | pd)
 - Conditions: image, model revision, layout, workload, concurrency, cache state
 - Flags changed: <baseline> → <variant>
 - Prediction (and how it was made): …
@@ -280,6 +349,9 @@ gains.
   - Engram host lookups and copies
   - launch gaps and idle time
 
+  For the 1P1D layout (O8), also attribute the KV transfer between the
+  engines.
+
 ## Done when
 
 - [ ] **Reproducible serving.** The image digest, model revision and launch
@@ -289,8 +361,14 @@ gains.
   failed requests.
 - [ ] **Quality gates on the baseline.** A1 passes, and the A2 resolve rate is
   recorded.
-- [ ] **Experiments.** At least five of O1–O7 have a prediction, a result and
-  an explanation in `docs/experiments.md`.
+- [ ] **Prefill optimization.** O6 and O5 each have a prediction, a result and
+  an explanation in `docs/experiments.md`, with their effect on TTFT and on
+  inter-token latency.
+- [ ] **Decode optimization.** O1, O9 and O4 are done, plus at least one of O2,
+  O3 and O7, each with a prediction, a result and an explanation.
+- [ ] **PD disaggregation.** O8's 1P1D layout is measured against the
+  aggregated 2×TP4 layout at both target profiles, and the decision rule is
+  applied. If 1P1D couldn't run, the failure is documented.
 - [ ] **Final configuration.** It beats the baseline on interactive goodput
   (concurrency per replica meeting both targets) **or** on async throughput per
   GPU. Report both deltas. The target is ≥ 1.3× on at least one, which is a
@@ -307,13 +385,15 @@ gains.
 - [ ] **Packaged endpoint.** The final configuration as a single launch script
   (or compose file) plus a README listing its targets, measured results, and
   known limits.
-- [ ] **Write-up.** About two pages, with three charts: throughput per GPU vs
-  tok/s per user (the Pareto curve), TTFT vs concurrency, and DSpark
-  acceptance and speedup vs concurrency.
+- [ ] **Write-up.** About two pages, with four charts:
+  - throughput per GPU vs tok/s per user (the Pareto curve)
+  - TTFT vs concurrency
+  - DSpark acceptance and speedup vs concurrency
+  - aggregated vs 1P1D: TTFT and p99 inter-token latency on B3
 - [ ] **Node released** on or before Fri 2026-11-20.
 
-**Optional, if time allows:** O8 disaggregation, and a comparison with the
-same model on B300 at the same targets.
+**Optional, if time allows:** a comparison with the same model on B300 at the
+same targets.
 
 **After the PoC:** turn the experiment log into two shareable Claude skills,
 one for prefill and one for decode. See the [skills plan](skills-plan.md).
@@ -322,11 +402,14 @@ one for prefill and one for decode. See the [skills plan](skills-plan.md).
 
 | Week | Dates | PoC work |
 |---|---|---|
-| 1 | Mon 11-02 – Sun 11-08 | Get node access. Bring up both replicas. Run A1 and the baseline A2. Run B1 with the analytical model's predictions written down first. Analyze the B3 traces |
-| 2 | Mon 11-09 – Sun 11-15 | B2 and B3 baselines. Experiments O1–O6. Both profiles |
-| 3 | Mon 11-16 – Fri 11-20 | O7 and the final configuration. A2 and A3 on the final configuration. Package, write up, release the node |
+| 1 | Mon 11-02 – Sun 11-08 | Get node access. Bring up both replicas. Run A1 and the baseline A2. Run B1 with the analytical model's predictions written down first. Analyze the B3 traces. Run the B2 and B3 baselines |
+| 2 | Mon 11-09 – Tue 11-10 | **Prefill optimization:** O6, O5. Prefill-heavy profile |
+| 2 | Wed 11-11 – Sun 11-15 | **Decode optimization:** O1, O9, O4, then O2, O3, O7. Decode-heavy profile |
+| 3 | Mon 11-16 – Tue 11-17 | **PD disaggregation:** O8, 1P1D vs 2×TP4 aggregated |
+| 3 | Wed 11-18 – Fri 11-20 | Final configuration. A2 and A3 on it. Package, write up, release the node |
 
-If the node arrives late, cut O7 and O8 before cutting a quality gate.
+If the node arrives late, cut O7, then O3, then O2, before cutting PD
+disaggregation or a quality gate.
 
 ## Where results go
 

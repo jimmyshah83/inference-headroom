@@ -19,7 +19,7 @@ What counts as done: [PoC plan](poc.md).
 | Host | 128 vCPU (Xeon Platinum 8468), 1,600 GiB RAM |
 | Engine | vLLM v0.32.0, image `vllm/vllm-openai@sha256:befccf0e…5c5b34` (CUDA 13.0) |
 | Model | `deepseek-ai/DeepSeek-V4.1-Flash-1017`, revision `1bae0e1088993b9b82de08f59de5be5a34e42170` (~511 GB) |
-| Layout | Two replicas, each TP4 with the Engram tables offloaded to host RAM (the vLLM recipe's H200 default) |
+| Layout | Two replicas, each TP4 with the Engram tables offloaded to host RAM (the vLLM recipe's H200 default). In the PD disaggregation phase, the same two GPU groups become one prefill engine and one decode engine |
 
 ## On the Mac
 

@@ -107,30 +107,38 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
 3. **Baseline layout:** the recipe's H200 default, two TP4 replicas with the
    Engram tables offloaded and vLLM's defaults for everything else.
    Speculative decoding is **off** in the baseline; DSpark is experiment O4.
-4. **Workloads:**
+4. **Optimization phases:**
+   - **Prefill** (O6, O5).
+   - **Decode** (O1, O9, O4, then O2, O3, O7).
+   - **PD disaggregation (O8):** the two TP4 GPU groups become one prefill
+     engine and one decode engine (1P1D, KV over NVLink via NIXL, behind
+     `vllm-router`). It is compared with the aggregated layout on the same 8
+     GPUs and adopted per target profile only if it passes the decision rule
+     in [poc.md](../poc.md#pd-disaggregation).
+5. **Workloads:**
    - synthetic fixed shapes (8k/1k, 64k/2k)
    - synthetic multi-turn conversations with a shared prefix
    - SemiAnalysis Claude Code traces, through AIPerf's
      `semianalysis_cc_traces_weka_062126_256k`
    - SPEED-Bench coding, for speculative-decoding acceptance
-5. **Targets:**
+6. **Targets:**
    - **Interactive:** p90 TTFT ≤ 3 s on cache-hit turns and p90 inter-token
      latency ≤ 20 ms.
    - **Async:** p90 TTFT ≤ 30 s, maximizing throughput per GPU.
 
    Both are judgment calls, recorded in [poc.md](../poc.md).
-6. **Quality gates:**
+7. **Quality gates:**
    - A1: a smoke test and 20 out of 20 well-formed tool calls.
    - A2: a fixed 50-task slice of SWE-bench Verified with mini-SWE-agent
      2.4.6, compared task by task.
    - A3: DSpark is lossless at temperature 0.
 
    An optimization that fails a gate is rejected.
-7. **Measurement:** AIPerf 0.13 is the main load generator, with
+8. **Measurement:** AIPerf 0.13 is the main load generator, with
    `vllm bench serve` as a cross-check. ADR 0001's rules still apply: pinned
    versions, warm-up, 3 repeats, and one variable at a time. Results are
    reported per replica, per GPU and per node.
-8. **Operations:**
+9. **Operations:**
    - Release the node by Fri 2026-11-20, or earlier if done.
    - Stop it between sessions.
    - Keep the checkpoint and vLLM's compile cache on persistent disk.
@@ -161,6 +169,10 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
   comparison at the same targets is an optional stretch.
 - **Engram offload makes decode depend on host memory.** NUMA placement and
   PCIe traffic become measured variables (O2, O3).
+- **PD disaggregation is in scope but unverified here.** The recipe verified
+  1P1D only on GB200 NVL4, using a node per role on 8-GPU systems. One-node
+  1P1D on H200 may fail to start. If it does, the failure is documented as the
+  result.
 - **First boots are slow.** The recipe sets a 3,600-second ready timeout, so
   sessions need planning.
 - **The checkpoint is newer than the recipe's evidence.** Any startup or
