@@ -371,8 +371,18 @@ lsblk -o NAME,SIZE,MOUNTPOINT
 nvidia-smi --query-gpu=index,power.limit,clocks.max.sm,clocks.max.mem --format=csv
 ```
 
-If the boot disk is too small, attach a network disk of at least 1 TB for the
-Hugging Face cache and point `HF_HOME` at it (step 9).
+On this node the boot disk is the only real disk: `/dev/vda1`, mounted at `/`.
+It is 1.3 TB with 1.2 TB free on 2026-11-03, which is enough for everything
+above, so step 9 puts the caches in your home directory. Don't use the other
+mounts:
+
+- `tmpfs` mounts such as `/dev/shm` and `/run` live in RAM. A checkpoint there
+  would take the host memory the Engram tables need, and it disappears on
+  reboot.
+- `/mnt/cloud-metadata` holds the VM's cloud metadata. It isn't for data.
+
+If a future node's boot disk is too small, attach a network disk of at least
+1 TB and point `HF_HOME` at it.
 
 ### 9. Pull the pinned vLLM image and download the model
 
@@ -385,11 +395,13 @@ export IMG=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d69
 export MODEL=deepseek-ai/DeepSeek-V4.1-Flash-1017
 export REV=1bae0e1088993b9b82de08f59de5be5a34e42170
 
-# Hugging Face cache on the large disk chosen in step 8.
-export HF_HOME=/path/on/big/disk/hf
+# Hugging Face cache on the boot disk (/dev/vda1, mounted at /), the only real
+# disk on this node (step 8). $HOME is /home/jimmyshah-sshkey.
+export HF_HOME=$HOME/hf
 
-# vLLM's compile and autotune cache. Keeping it on disk makes later starts faster.
-export VLLM_CACHE=/path/on/big/disk/vllm-cache
+# vLLM's compile and autotune cache, on the same disk. Keeping it on disk makes
+# later starts faster.
+export VLLM_CACHE=$HOME/vllm-cache
 mkdir -p $HF_HOME $VLLM_CACHE
 
 # Download the image (one time, ~9.7 GB compressed).
