@@ -2,7 +2,8 @@
 
 - **Status:** Proposed
 - **Date:** 2026-11-02, revised 2026-11-03. The hardware changed from 8×H200
-  to 8×B200, and the baseline took on the vLLM recipe's B200 settings.
+  to 8×B200, the baseline took on the vLLM recipe's B200 settings, and the
+  engine moved from vLLM v0.32.0 to v0.33.0.
 - **Supersedes:** [ADR 0001](0001-qwen3.8-flash-next-on-1xb300-with-vllm.md)'s
   hardware (1×B300), model (Qwen3.8-Flash-Next) and single-GPU scope, for the
   PoC window of 2026-11-02 to 2026-11-20. ADR 0001's measurement protocol still
@@ -139,13 +140,20 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
   leaves far more room for KV cache than TP2 does. It may even hold the
   Engram tables without the offload, at ~46 GiB more per GPU (experiment O2).
 - **MXFP4 experts on Blackwell:** the experts can run on FP4 tensor cores.
-  The kernel vLLM v0.32.0 picks sets their compute ceiling: FP4, FP8 or BF16
+  The kernel vLLM v0.33.0 picks sets their compute ceiling: FP4, FP8 or BF16
   activations. Record it from the startup log.
 
 ## Decision
 
-1. **Engine: vLLM only,** v0.32.0 pinned by digest
-   (`vllm/vllm-openai@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34`).
+1. **Engine: vLLM only,** v0.33.0 pinned by digest
+   (`vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e`).
+   v0.33.0 was released 2026-11-02. It was chosen over v0.32.0 before any
+   baseline ran, for four reasons:
+   - It updates the 1017 reference encoding (#62199, #62200).
+   - It fixes DeepSeek-V4.1 Engram and compressed-KV bugs.
+   - Its Rust frontend rejects unsupported flags instead of ignoring them.
+   - It's still CUDA 13.0, which matches the node's driver.
+
    The vLLM recipe has B200 configurations for this model (TP2, DEP8) and
    requires v0.31.0 or later. vLLM also matches ADR 0001's engine choice. The
    recipe's AgentX presets use a nightly image; the PoC stays on the pinned
@@ -256,16 +264,18 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
 
 ## Open questions (resolve in week 1)
 
-1. Which MoE kernel does vLLM v0.32.0 pick for the MXFP4 experts on B200
+1. Which MoE kernel does vLLM v0.33.0 pick for the MXFP4 experts on B200
    (SM100)? Are the activations FP4, FP8 or BF16?
 2. Actual KV pool per replica, and host RAM pinned per replica, for the Engram
    tables.
 3. Does `FLASHINFER_MLA_SPARSE_DSV41` run at TP4? The recipe documents it with
    TP2. Do TP8 and DEP8 start?
-4. Does v0.32.0 accept every setting in the reference configuration
+4. Does v0.33.0 accept every setting in the reference configuration
    (`VLLM_USE_V2_MODEL_RUNNER`, `VLLM_USE_RUST_FRONTEND`, `use_thp`,
    `enable_flashinfer_autotune`)? The recipe's AgentX presets use a nightly
-   image.
+   image. v0.33.0's Rust frontend rejects unsupported `vllm serve` flags, so
+   the first start answers this for flags. Unknown environment variables may
+   still be ignored without an error.
 5. What is DSpark's acceptance length on coding traffic at concurrency 1–32?
    Does adaptive verification help? The reference configuration turns it off.
 6. Can a 1P1D layout (TP4 prefill and TP4 decode, KV over NIXL) run on a
@@ -286,7 +296,8 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
 - DeepSeek-V4.1-Flash-1017 model card: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017
 - vLLM recipe, DeepSeek-V4.1-Flash (updated 2026-10-25): https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash
   (source: https://github.com/vllm-project/recipes/blob/main/models/deepseek-ai/DeepSeek-V4.1-Flash.yaml)
-- vLLM v0.32.0 release notes: https://github.com/vllm-project/vllm/releases/tag/v0.32.0
+- vLLM v0.33.0 release notes (published under the `v0.33.0rc3` tag): https://github.com/vllm-project/vllm/releases/tag/v0.33.0rc3
+- vLLM v0.33.0 image tags: https://hub.docker.com/r/vllm/vllm-openai/tags
 - NVIDIA DGX B200: https://www.nvidia.com/en-us/data-center/dgx-b200/
 - AIPerf: https://github.com/ai-dynamo/aiperf
 - mini-SWE-agent: https://mini-swe-agent.com/latest/

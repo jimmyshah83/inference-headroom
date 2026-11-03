@@ -21,7 +21,7 @@ What counts as done: [PoC plan](poc.md).
 | SSH key (on the Mac) | `~/.ssh/id_ed25519_nebius` |
 | GPUs | 8× NVIDIA B200: HBM3e, 183,359 MiB (~179 GiB) each in `nvidia-smi` (~1,432 GiB per node), up to 8 TB/s each, NVLink 5 at 1.8 TB/s per GPU |
 | Host | 160 vCPU (2× Xeon Platinum 8580, 2 NUMA nodes), 1,792 GiB RAM |
-| Engine | vLLM v0.32.0, image `vllm/vllm-openai@sha256:befccf0e…5c5b34` (CUDA 13.0) |
+| Engine | vLLM v0.33.0 (released 2026-11-02), image `vllm/vllm-openai@sha256:d825baf9…a84c6e` (CUDA 13.0, PyTorch 2.14) |
 | Model | `deepseek-ai/DeepSeek-V4.1-Flash-1017`, revision `1bae0e1088993b9b82de08f59de5be5a34e42170` (~511 GB) |
 | Layout | Two replicas, each TP4, with the vLLM recipe's B200 settings: fp8 KV, FlashInfer sparse-MLA attention, and the Engram tables offloaded to host RAM. The recipe's own B200 default is TP2 for concurrency ~1 ([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md), decision 3). In the PD disaggregation phase, the same two GPU groups become one prefill engine and one decode engine |
 
@@ -360,7 +360,7 @@ free -g | head -2
 nproc
 
 # Free space per filesystem. Plan for ~800 GB: the checkpoint (~511 GB),
-# the vLLM image (9.2 GB compressed), and SWE-bench task images (~100 GB for 50 tasks).
+# the vLLM image (9.7 GB compressed), and SWE-bench task images (~100 GB for 50 tasks).
 df -h
 
 # Disks and where they are mounted, to choose where the checkpoint goes.
@@ -377,9 +377,9 @@ Hugging Face cache and point `HF_HOME` at it (step 9).
 ### 9. Pull the pinned vLLM image and download the model
 
 ```bash
-# The pinned v0.32.0 image (CUDA 13.0). Pinning by digest means a later tag
+# The pinned v0.33.0 image (CUDA 13.0). Pinning by digest means a later tag
 # can't change the engine in the middle of the PoC.
-export IMG=vllm/vllm-openai@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34
+export IMG=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
 
 # The model and its exact revision (full hash; a short hash may not resolve).
 export MODEL=deepseek-ai/DeepSeek-V4.1-Flash-1017
@@ -392,10 +392,10 @@ export HF_HOME=/path/on/big/disk/hf
 export VLLM_CACHE=/path/on/big/disk/vllm-cache
 mkdir -p $HF_HOME $VLLM_CACHE
 
-# Download the image (one time, ~9.2 GB compressed).
+# Download the image (one time, ~9.7 GB compressed).
 docker pull $IMG
 
-# Print the vLLM version inside the image, to confirm it is 0.32.0.
+# Print the vLLM version inside the image, to confirm it is 0.33.0.
 docker run --rm --entrypoint python3 $IMG -c "import vllm; print(vllm.__version__)"
 
 # Download the checkpoint into HF_HOME with the hf CLI that ships in the
@@ -484,7 +484,7 @@ Record these from each replica's startup log:
 
 - The KV cache memory available and the number of tokens the KV cache can hold.
 - **Which MoE kernel was picked for the MXFP4 experts.** B200 has FP4 tensor
-  cores, so vLLM v0.32.0 can run the experts with FP4 math. It may instead pick
+  cores, so vLLM v0.33.0 can run the experts with FP4 math. It may instead pick
   a kernel that computes in FP8 or BF16 (for example W4A16: 4-bit weights, BF16
   compute). The kernel sets the compute ceiling for the expert layers (the FP4,
   FP8 or BF16 rate), which changes the analytical model.

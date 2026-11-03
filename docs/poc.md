@@ -350,7 +350,7 @@ gains.
   concurrency points. That is a judgment call, as in ADR 0001.
 - **Profile two configurations,** one decode-heavy (8k/1k at high concurrency)
   and one prefill-heavy (64k/2k at low concurrency). Use vLLM's torch profiler:
-  check `vllm serve --help` in v0.32 for the profiler flag, then call
+  check `vllm serve --help` in v0.33 for the profiler flag, then call
   `/start_profile` and `/stop_profile` around a short run. Add Nsight Systems if
   it's available. Attribute the time to:
   - MoE GEMMs
