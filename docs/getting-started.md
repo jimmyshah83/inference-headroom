@@ -1,12 +1,11 @@
 # Getting started
 
-How to create the project's 8×H200 node, reach it, and serve
-**DeepSeek-V4.1-Flash-1017** with vLLM for the coding-agent PoC. Capacity
-approved one node on 2026-11-02 in the **Production tf-us1** project (region
-`us-central1`), to be held until **Fri 2026-11-20**. The node doesn't exist
-yet: you create it, after the network [prerequisites](#prerequisites-a-network-and-subnet-for-the-node).
-None of the steps below have been run yet. Every command block has a comment
-above each command saying what it does.
+How to reach the project's 8×B200 node and serve
+**DeepSeek-V4.1-Flash-1017** with vLLM for the coding-agent PoC. On 2026-11-03,
+capacity approved a temporary allocation of 8 B200 GPUs in the **Architects
+us-central1** project (region `us-central1`). The node runs there. The PoC ends
+**Fri 2026-11-20**. Every command block has a comment above each command
+saying what it does.
 
 This guide replaces the 1×B300 / Qwen3.8-Flash-Next guide (still in git
 history). Why the plan changed: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md).
@@ -14,19 +13,23 @@ What counts as done: [PoC plan](poc.md).
 
 | | |
 |---|---|
-| Project | Production tf-us1 (`<project-id>`), in the Token Factory tenant. It is a production project, so the node gets a network of its own |
-| Region | `us-central1` |
-| Network and subnet | `h200-poc-network` (`<network-id>`) and `h200-poc-subnet` (`<subnet-id>`). Fill in after P2 |
-| Node | `<instance-id>` (Nebius, platform `gpu-h200-sxm`, preset `8gpu-128vcpu-1600gb`). Fill in after P4 |
-| SSH user | `<ssh-user>` |
-| SSH key (on the Mac) | `~/.ssh/<key>` |
-| GPUs | 8× NVIDIA H200 SXM: 141 GB HBM3e and 4.8 TB/s each (1,128 GB per node), NVLink 900 GB/s |
-| Host | 128 vCPU (Xeon Platinum 8468), 1,600 GiB RAM |
+| Project | Architects us-central1 (`project-u00fxtzxpr008w3p2t9663`), in the Token Factory tenant |
+| Region | `us-central1` (fabric `us-central1-b`) |
+| Network and subnet | The project's `default-network` and `default-subnet` (`vpcsubnet-u00xtfz8eh2vntkzg0`). The node was created in them, so the [prerequisites](#prerequisites-a-network-and-subnet-for-the-node) weren't needed |
+| Node | `computeinstance-u00wvygqqd9xavf4sy` (`jimmyshah-b200-instance-1`; Nebius platform `gpu-b200-sxm`, preset `8gpu-160vcpu-1792gb`) |
+| SSH user | `jimmyshah-sshkey` |
+| SSH key (on the Mac) | `~/.ssh/id_ed25519_nebius` |
+| GPUs | 8× NVIDIA B200: 180 GB HBM3e (183,359 MiB in `nvidia-smi`) and 8 TB/s each (1,440 GB per node), NVLink 5 at 1.8 TB/s per GPU |
+| Host | 160 vCPU (2× Xeon Platinum 8580, 2 NUMA nodes), 1,792 GiB RAM |
 | Engine | vLLM v0.32.0, image `vllm/vllm-openai@sha256:befccf0e…5c5b34` (CUDA 13.0) |
 | Model | `deepseek-ai/DeepSeek-V4.1-Flash-1017`, revision `1bae0e1088993b9b82de08f59de5be5a34e42170` (~511 GB) |
-| Layout | Two replicas, each TP4 with the Engram tables offloaded to host RAM (the vLLM recipe's H200 default). In the PD disaggregation phase, the same two GPU groups become one prefill engine and one decode engine |
+| Layout | Two replicas, each TP4 with the Engram tables offloaded to host RAM. This comes from the vLLM recipe's Hopper configuration; no B200 configuration was found on 2026-11-03. In the PD disaggregation phase, the same two GPU groups become one prefill engine and one decode engine |
 
 ## Prerequisites: a network and subnet for the node
+
+**Not needed for the current node.** It was created in the existing
+`default-subnet` of Architects us-central1. These steps are kept for a node in
+a project with no usable network, as Production tf-us1 was on 2026-11-02.
 
 Do these once, on the Mac, before you create the node. They follow Nebius's
 guide [Isolating Nebius AI Cloud resources in separate networks](https://docs.nebius.com/vpc/networking/isolation#create-net).
@@ -100,7 +103,7 @@ owners can tell what they are for.
 # Create the PoC network in the project and save its ID.
 export NETWORK_ID=$(nebius --profile ai-cloud vpc network create \
   --parent-id $PROJECT_ID \
-  --name h200-poc-network \
+  --name poc-network \
   --format jsonpath='{.metadata.id}')
 
 # Create a subnet in that network and save its ID. By default, a subnet takes
@@ -108,7 +111,7 @@ export NETWORK_ID=$(nebius --profile ai-cloud vpc network create \
 export SUBNET_ID=$(nebius --profile ai-cloud vpc subnet create \
   --parent-id $PROJECT_ID \
   --network-id $NETWORK_ID \
-  --name h200-poc-subnet \
+  --name poc-subnet \
   --format jsonpath='{.metadata.id}')
 
 # Print both IDs. If either is empty, the command that should have set it
@@ -157,17 +160,17 @@ pool rather than creating pools yourself.
 ```bash
 # Save the IDs in a file outside the repo, so a new terminal can load them
 # (step 1).
-cat > ~/.h200-poc.env <<EOF
+cat > ~/.b200-poc.env <<EOF
 export PROJECT_ID=$PROJECT_ID
 export NETWORK_ID=$NETWORK_ID
 export SUBNET_ID=$SUBNET_ID
 EOF
 ```
 
-When you create the node, put it in `h200-poc-subnet` and give it a public IP
+When you create the node, put it in `poc-subnet` and give it a public IP
 address. **You can't change the subnet afterwards.**
 
-- **Web console:** in the VM's network settings, choose `h200-poc-subnet` and
+- **Web console:** in the VM's network settings, choose `poc-subnet` and
   keep a public IP address.
 - **CLI:** add this parameter to `nebius compute instance create`:
 
@@ -180,11 +183,11 @@ address. **You can't change the subnet afterwards.**
   `{"static": true}` instead to keep the address fixed
   ([creating a VM](https://docs.nebius.com/compute/virtual-machines/manage#create-a-vm)).
 
-Once the node exists, add its ID to `~/.h200-poc.env`:
+Once the node exists, add its ID to `~/.b200-poc.env`:
 
 ```bash
 # Append the node's ID to the saved IDs.
-echo 'export INSTANCE_ID=<instance-id>' >> ~/.h200-poc.env
+echo 'export INSTANCE_ID=<instance-id>' >> ~/.b200-poc.env
 ```
 
 Notes:
@@ -206,8 +209,16 @@ Notes:
 ### 1. Load the IDs and pick the profile
 
 ```bash
-# Load the project, network, subnet and node IDs saved in P4.
-source ~/.h200-poc.env
+# The first time only: save the current node's IDs, since P4 wasn't needed.
+# Skip this if ~/.b200-poc.env already exists.
+cat > ~/.b200-poc.env <<'EOF'
+export PROJECT_ID=project-u00fxtzxpr008w3p2t9663
+export SUBNET_ID=vpcsubnet-u00xtfz8eh2vntkzg0
+export INSTANCE_ID=computeinstance-u00wvygqqd9xavf4sy
+EOF
+
+# Load the saved project, subnet and node IDs.
+source ~/.b200-poc.env
 
 # List profiles; the active one is marked [default]. It should be ai-cloud.
 nebius profile list
@@ -230,13 +241,14 @@ allocation is attached.
 
 ### 3. Add an SSH shortcut
 
-Add this to `~/.ssh/config`, replacing the placeholders:
+Add this to `~/.ssh/config`, replacing `<public-ip>` with the address from
+step 2. `IdentityFile` is the private key, the file without `.pub`:
 
 ```
-Host h200
+Host b200
   HostName <public-ip>
-  User <ssh-user>
-  IdentityFile ~/.ssh/<key>
+  User jimmyshah-sshkey
+  IdentityFile ~/.ssh/id_ed25519_nebius
   IdentitiesOnly yes
   LocalForward 8000 localhost:8000
   LocalForward 8001 localhost:8001
@@ -252,10 +264,10 @@ Host h200
 
 ```bash
 # Open a shell on the node. This also starts both tunnels.
-ssh h200
+ssh b200
 
 # Open only the tunnels, with no shell (-N). Use this in a spare terminal.
-ssh -N h200
+ssh -N b200
 ```
 
 ## On the node
@@ -309,7 +321,7 @@ on a single-user node.
 docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L
 ```
 
-You should see `GPU 0` through `GPU 7`, each `NVIDIA H200`.
+You should see `GPU 0` through `GPU 7`, each `NVIDIA B200`.
 
 If it fails with `could not select device driver "" with capabilities:
 [[gpu]]`, the NVIDIA Container Toolkit is missing. Install it:
@@ -399,8 +411,9 @@ and run `hf download $MODEL --revision $REV` directly.
 ### 10. Start the two replicas
 
 Each replica is one vLLM server on 4 GPUs. The baseline is the vLLM recipe's
-H200 configuration with tool calling and reasoning turned on and the vision
-encoder skipped. **Speculative decoding is off in the baseline.** Turning on
+configuration, with tool calling and reasoning turned on and the vision
+encoder skipped. The recipe was written for Hopper GPUs; no B200 configuration
+was found on 2026-11-03. **Speculative decoding is off in the baseline.** Turning on
 DSpark is an experiment (O4 in the [PoC plan](poc.md)).
 
 ```bash
@@ -443,7 +456,7 @@ What the flags do:
 | `--revision` | Load the exact commit pinned above |
 | `--tensor-parallel-size 4` | Split each layer across 4 GPUs. Two TP4 replicas fill the node |
 | `--tokenizer-mode deepseek_v41` | Encode prompts with DeepSeek's Python encoder. The repo ships no Jinja chat template |
-| `--engram-config '{"cpu_offload":true}'` | Keep the Engram n-gram tables (183 GiB) in pinned host RAM instead of HBM. The recipe reports 23.6 GiB moved off each GPU and ~38.5 GiB of KV cache left per GPU. Without the offload, the KV pool collapses. The recipe's figures don't add up to the 183 GiB table size, so measure host and GPU memory yourself |
+| `--engram-config '{"cpu_offload":true}'` | Keep the Engram n-gram tables (183 GiB) in pinned host RAM instead of HBM. On Hopper, the recipe reports 23.6 GiB moved off each GPU and ~38.5 GiB of KV cache left per GPU, and says the KV pool collapses without the offload. A B200 has ~39 GB more HBM per GPU, so that hasn't been shown for this node. The recipe's figures don't add up to the 183 GiB table size, so measure host and GPU memory yourself |
 | `--language-model-only` | Skip the vision encoder. The coding workload is text only, so this frees memory for KV cache |
 | `--tool-call-parser deepseek_v41 --enable-auto-tool-choice` | Turn the model's DSML tool-call blocks into OpenAI `tool_calls` |
 | `--reasoning-parser deepseek_v41` | Return the thinking in `reasoning_content`, separate from the answer |
@@ -460,16 +473,17 @@ faster. A replica is ready when its log shows `Application startup complete`.
 Record these from each replica's startup log:
 
 - The KV cache memory available and the number of tokens the KV cache can hold.
-- **Which MoE kernel was picked for the MXFP4 experts.** H200 has no FP4 tensor
-  cores. vLLM v0.32.0 falls back to W4A16 (4-bit weights, BF16 compute) when no
-  W4A4 kernel exists. If so, the compute ceiling for the expert layers is the
-  BF16 rate, not FP8. That changes the analytical model.
+- **Which MoE kernel was picked for the MXFP4 experts.** B200 has FP4 tensor
+  cores, so vLLM v0.32.0 can run the experts with FP4 math. It may instead pick
+  a kernel that computes in FP8 or BF16 (for example W4A16: 4-bit weights, BF16
+  compute). The kernel sets the compute ceiling for the expert layers (the FP4,
+  FP8 or BF16 rate), which changes the analytical model.
 - The Engram offload message and how much host memory it pinned.
 - How long the start took, split into weight loading and CUDA graph capture.
 
 ### 11. Test it from the Mac
 
-With `ssh h200` or `ssh -N h200` open:
+With `ssh b200` or `ssh -N b200` open:
 
 ```bash
 # Health check on both replicas. Each returns HTTP 200 once ready.
@@ -554,8 +568,6 @@ nebius vpc network delete --id $NETWORK_ID
 
 ## Next
 
-- Do the network prerequisites (P1–P4), create the node, and fill in the
-  table at the top.
 - Run the baseline and the quality smoke tests: Week 1 of the [PoC plan](poc.md).
 - Start the analytical model: see "Analytical model and profiles" in the
   [PoC plan](poc.md#analytical-model-and-profiles).
