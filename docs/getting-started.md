@@ -386,22 +386,29 @@ If a future node's boot disk is too small, attach a network disk of at least
 
 ### 9. Pull the pinned vLLM image and download the model
 
+Save the PoC's settings in `~/.bashrc` once, so every new SSH session and tmux
+window has them. Steps 10–12 depend on them.
+
 ```bash
+# Append the settings to ~/.bashrc. The quoted 'EOF' keeps $HOME as written, so
+# it expands each time a shell starts.
+cat >> ~/.bashrc <<'EOF'
+
+# DeepSeek-V4.1-Flash PoC (getting-started step 9)
 # The pinned v0.33.0 image (CUDA 13.0). Pinning by digest means a later tag
 # can't change the engine in the middle of the PoC.
 export IMG=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
-
 # The model and its exact revision (full hash; a short hash may not resolve).
 export MODEL=deepseek-ai/DeepSeek-V4.1-Flash-1017
 export REV=1bae0e1088993b9b82de08f59de5be5a34e42170
-
-# Hugging Face cache on the boot disk (/dev/vda1, mounted at /), the only real
-# disk on this node (step 8). $HOME is /home/jimmyshah-sshkey.
+# The Hugging Face cache and vLLM's compile and autotune cache, on the boot
+# disk (/dev/vda1 at /), the only real disk on this node (step 8).
 export HF_HOME=$HOME/hf
-
-# vLLM's compile and autotune cache, on the same disk. Keeping it on disk makes
-# later starts faster.
 export VLLM_CACHE=$HOME/vllm-cache
+EOF
+
+# Load the settings into this shell and create the cache folders.
+source ~/.bashrc
 mkdir -p $HF_HOME $VLLM_CACHE
 
 # Download the image (one time, ~9.7 GB compressed).
@@ -409,16 +416,63 @@ docker pull $IMG
 
 # Print the vLLM version inside the image, to confirm it is 0.33.0.
 docker run --rm --entrypoint python3 $IMG -c "import vllm; print(vllm.__version__)"
+```
 
-# Download the checkpoint into HF_HOME with the hf CLI that ships in the
-# image. ~511 GB, one time.
-docker run --rm --entrypoint hf -v $HF_HOME:/root/.cache/huggingface $IMG \
+Then download the checkpoint, about 510 GB, with the `hf` tool that ships in the
+image. Use a Hugging Face read token: on 2026-11-03 the download ran at about
+490 MB/s without one and about 1.6 GB/s with one.
+
+```bash
+# Start a tmux session, so the download survives a dropped SSH connection.
+# Ctrl-b d detaches; "tmux attach -t dl" comes back.
+tmux new -s dl
+
+# Paste a read token from huggingface.co/settings/tokens. read -s keeps it off
+# the screen and out of your shell history. Don't put it in ~/.bashrc: vLLM runs
+# offline in step 10 and doesn't need it.
+read -rsp 'HF token: ' HF_TOKEN && export HF_TOKEN; echo
+
+# Check that the token works and reaches the container. It prints your Hugging
+# Face username; "Not logged in" or an error means a wrong or missing token.
+docker run --rm -e HF_TOKEN --entrypoint hf $IMG auth whoami
+
+# Download the checkpoint into HF_HOME. -e HF_TOKEN passes the token in, and the
+# -v mount puts the files on the host, where step 10's containers find them.
+docker run --rm -e HF_TOKEN --entrypoint hf -v $HF_HOME:/root/.cache/huggingface $IMG \
   download $MODEL --revision $REV
 ```
 
-Put the `export` lines in `~/.bashrc` so later sessions have them. If the image
-has no `hf` command, install it on the host with `pip install -U huggingface_hub`
-and run `hf download $MODEL --revision $REV` directly.
+The progress bar counts finished files, so it can sit at `0/83` or `81/83` for
+minutes while the largest files download. Shards 47 and 48 hold the two Engram
+tables, about 101.5 GB each. Don't press Ctrl-C to check on it; detach instead.
+
+If the download stops before it finishes, delete the partial files before you
+run it again. The downloader reserves each file's full size up front, so a
+partial file can look complete.
+
+```bash
+# Delete partial downloads. The files are owned by root, because the container
+# runs as root.
+sudo rm -f $HF_HOME/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/blobs/*.incomplete
+```
+
+Then run the download command again. It skips the files that already finished.
+
+Check the download before step 10:
+
+```bash
+# Count the weight shards. It should print 48.
+ls $HF_HOME/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/$REV/ \
+  | grep -c '^model-.*-of-00048.safetensors$'
+
+# Check every large file against its hash. Each one is named after its own
+# SHA-256, so the check needs no other input. It runs 8 files at a time and takes
+# a few minutes. It prints "all files OK", or the name of each file that fails.
+cd $HF_HOME/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/blobs
+ls | grep -E '^[0-9a-f]{64}$' \
+  | xargs -P 8 -I{} sh -c 'echo "{}  {}" | sha256sum -c --quiet' && echo "all files OK"
+cd -
+```
 
 ### 10. Start the two replicas
 
