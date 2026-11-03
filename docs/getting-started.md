@@ -277,11 +277,13 @@ lscpu | grep -E 'Socket|NUMA'
 docker --version
 ```
 
-Record the output in `~/runs/env.txt` (step 12). The NUMA layout matters for
-this model. Each replica keeps its Engram tables in pinned host memory and
-reads rows from them every step. A replica on GPUs 0–3 should use the socket
-those GPUs attach to. That is one of the PoC experiments (O3 in the
-[PoC plan](poc.md)).
+Nothing to save yet: step 12 writes this output to `~/runs/env.txt`. For now,
+check which NUMA node and CPU cores each GPU is closest to (the `NUMA
+Affinity` and `CPU Affinity` columns). The NUMA layout matters for this model.
+Each replica keeps its Engram tables in pinned host memory and reads rows from
+them every step. A replica on GPUs 0–3 should use the socket those GPUs attach
+to. The baseline in step 10 doesn't pin replicas. Pinning them is one of the
+PoC experiments (O3 in the [PoC plan](poc.md)).
 
 ### 6. Let your user run Docker
 
@@ -510,13 +512,15 @@ then spent on reasoning and the answer comes back empty with
 
 ```bash
 # Append the run environment to a log: UTC time, image digest, model revision,
-# vLLM/torch/CUDA versions, GPU settings, and the GPU topology.
+# vLLM/torch/CUDA versions, GPU settings, the GPU topology, and the CPU sockets
+# and NUMA nodes.
 mkdir -p ~/runs && {
   date -u +%FT%TZ
   echo "$IMG  model $MODEL rev $REV"
   docker exec vllm-a python3 -c "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__, 'cuda', torch.version.cuda)"
   nvidia-smi --query-gpu=index,name,memory.total,driver_version,power.limit,clocks.max.sm,clocks.max.mem --format=csv,noheader
   nvidia-smi topo -m
+  lscpu | grep -E 'Model name|Socket|NUMA'
 } | tee -a ~/runs/env.txt
 
 # Stop and remove both replicas. The image, checkpoint and vLLM cache stay on disk.
