@@ -7,7 +7,7 @@ part of Nebius).
 From **Mon 2026-11-02 to Fri 2026-11-20**:
 
 - Serve **DeepSeek-V4.1-Flash-1017** for a **coding-agent** workload on one
-  **8×H200** node with vLLM.
+  **8×B200** node with vLLM.
 - Optimize it against latency and throughput targets without losing quality.
 - Explain every gain with a measurement.
 
@@ -21,7 +21,7 @@ The core artifacts:
 
 This is a learning project: documentation first, then code and results.
 
-**Key decisions:** [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md).
+**Key decisions:** [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md).
 **Plan and done criteria:** [poc.md](poc.md).
 **After the PoC:** [skills-plan.md](skills-plan.md).
 

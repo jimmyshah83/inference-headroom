@@ -1,12 +1,12 @@
-# PoC: coding-agent serving on 8×H200
+# PoC: coding-agent serving on 8×B200
 
-Serve DeepSeek-V4.1-Flash-1017 for a coding-agent workload on one 8×H200 node,
+Serve DeepSeek-V4.1-Flash-1017 for a coding-agent workload on one 8×B200 node,
 then optimize it against latency and throughput targets without losing
 quality. Explain every gain with a measurement. The window runs from Mon
 2026-11-02 to **Fri 2026-11-20**.
 
 - Setup: [getting-started.md](getting-started.md)
-- Decisions: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md)
+- Decisions: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md)
 
 The PoC copies how an optimization team ships a model endpoint. You start from a
 baseline, change one variable at a time, and the result has to meet the latency
@@ -44,16 +44,25 @@ Write down your reasoning if you change them.
 AIPerf computes goodput (requests meeting every target) with
 `--goodput "time_to_first_token:3000 inter_token_latency:20"`. Units are ms.
 
-For the cost figures, use the public on-demand H200 price, $5.40 per GPU-hour
-([nebius.com/prices](https://nebius.com/prices), 2026-11-02). Keep any deal
+For the cost figures, use the public on-demand B200 price, $8.50 per GPU-hour
+([nebius.com/prices](https://nebius.com/prices), 2026-11-03). Keep any deal
 pricing out of this repo.
 
 ## Baseline
 
-The baseline is the recipe's H200 configuration from
-[getting-started step 10](getting-started.md#10-start-the-two-replicas):
-2 replicas, each TP4 with Engram offload, prefix caching on, and speculative
-decoding off. Every experiment is compared against this baseline.
+The baseline is defined in
+[getting-started step 10](getting-started.md#10-start-the-two-replicas). It
+runs 2 replicas, each TP4, with the vLLM recipe's B200 settings:
+- fp8 KV cache
+- FlashInfer sparse-MLA attention with an MXFP4 indexer
+- Engram offload with transparent huge pages
+- FlashInfer autotuning
+
+Prefix caching is on, speculative decoding is off, and everything else uses
+vLLM's defaults. The recipe's own B200 default is TP2 tuned for concurrency
+~1. That configuration is the TP2 point in O1
+([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md),
+decision 3). Every experiment is compared against this baseline.
 
 ## Performance benchmarks
 
@@ -247,12 +256,12 @@ the explanation. Each phase also feeds one of the future skills
 
 | # | Variable | Baseline → variant | What to look for |
 |---|---|---|---|
-| O1 | Parallel layout | 2×TP4 → 1×TP8 → DEP8 (`--data-parallel-size 8 --enable-expert-parallel`) | Per-GPU throughput vs per-user speed. TP8 halves per-GPU weights but doubles all-reduce traffic. The recipe lists DEP only for Blackwell, so TP8 and DEP8 are **unverified on H200**. The layout also changes prefill speed; record TTFT too |
+| O1 | Parallel layout | 2×TP4 → 4×TP2 → 1×TP8 → DEP8 (`--data-parallel-size 8 --enable-expert-parallel`) | Per-GPU throughput vs per-user speed. TP2 is the recipe's B200 default; run it with the baseline's other settings, then once as the full reference configuration in ADR 0002 (DSpark on, 8 sequences). TP8 halves per-GPU weights vs TP4 but doubles all-reduce traffic. The recipe lists DEP8 for B200 nodes; TP8 is **unverified**. The layout also changes prefill speed; record TTFT too |
 | O9 | Batch and CUDA graph sizes | default → `--max-num-seqs` 32 / 64 / 128; `--max-cudagraph-capture-size` ≥ batch × (1 + 5 drafts) | Where per-user speed falls off as the batch grows, and whether decode steps fall outside the captured graphs |
-| O4 | Speculative decoding | off → DSpark, 5 tokens, adaptive verification (`--speculative-config` from the recipe); then 1–5 tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1) |
-| O2 | Engram placement | offload on → off (TP8 only, where HBM may allow it) | What host lookups cost per decode step, and how much KV cache they buy |
-| O3 | NUMA pinning | none → each replica's container bound to its GPUs' socket (`--cpuset-cpus`, `--cpuset-mems`) | Step time and tail latency, given the per-step Engram reads from host memory |
-| O7 | KV cache dtype | auto → `--kv-cache-dtype fp8`, if the image accepts it for this model on Hopper | KV capacity vs accuracy (gate A2) |
+| O4 | Speculative decoding | off → DSpark with the reference configuration's `--speculative-config` (5 tokens, probabilistic drafts, block rejection, adaptive verification off); then adaptive verification on; then 1–5 tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1) |
+| O2 | Engram placement | offload on → off (at TP4 the tables add ~46 GiB per GPU, which a B200 may hold) | What host lookups cost per decode step, and how much KV cache they buy |
+| O3 | NUMA pinning | none → each replica's container bound to its GPUs' socket: replica A `--cpuset-cpus 0-79 --cpuset-mems 0`, replica B `--cpuset-cpus 80-159 --cpuset-mems 1` | Step time and tail latency, given the per-step Engram reads from host memory |
+| O7 | KV cache dtype | fp8 (baseline, from the recipe) → auto, if the attention backend accepts it | What fp8 KV costs in accuracy (gate A2) and buys in KV capacity |
 
 ### PD disaggregation
 
@@ -276,7 +285,7 @@ with these settings:
   compatible
 
 The recipe verified 1P1D only on GB200 NVL4. On 8-GPU nodes it uses a whole
-node per role, so **one-node 1P1D on H200 is unverified.** That is also open
+node per role, so **one-node 1P1D on B200 is unverified.** That is also open
 question 6 in ADR 0002.
 
 - **Predict first:**
@@ -333,8 +342,9 @@ gains.
   - Prefill time, from FLOPs ÷ achievable compute. This model's prefill runs
     only the 20-layer encoder half, about 8B active parameters per token,
     against about 16B per token in decode.
-  - The compute ceiling for the experts. If they run W4A16, use the BF16 rate
-    (~989 TFLOPS dense per GPU), not FP8.
+  - The compute ceiling for the experts, from the kernel vLLM picked for the
+    MXFP4 experts (getting-started step 10). Dense per GPU: ~9 PFLOPS at
+    FP4, ~4.5 at FP8, ~2.25 at BF16 (ADR 0002, Hardware).
 
   Then compare with B1. The target is decode within about 25% at five or more
   concurrency points. That is a judgment call, as in ADR 0001.

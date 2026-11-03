@@ -59,7 +59,8 @@ are long or agentic, or prefill limits capacity."
 2. Characterize the workload: input lengths and prefix-reuse rate (for
    example, `aiperf analyze-trace`).
 3. Predict TTFT and prefill throughput. State which compute ceiling applies.
-   On Hopper, for example, W4A16 experts run at the BF16 rate.
+   On B200, for example, that depends on whether the MXFP4 experts run at the
+   FP4, FP8 or BF16 rate.
 4. Measure the baseline:
    - TTFT vs input length at concurrency 1
    - TTFT p50 and p90 under target load

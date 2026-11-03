@@ -8,7 +8,7 @@ us-central1** project (region `us-central1`). The node runs there. The PoC ends
 saying what it does.
 
 This guide replaces the 1×B300 / Qwen3.8-Flash-Next guide (still in git
-history). Why the plan changed: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xh200-with-vllm.md).
+history). Why the plan changed: [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md).
 What counts as done: [PoC plan](poc.md).
 
 | | |
@@ -19,11 +19,11 @@ What counts as done: [PoC plan](poc.md).
 | Node | `computeinstance-u00wvygqqd9xavf4sy` (`jimmyshah-b200-instance-1`; Nebius platform `gpu-b200-sxm`, preset `8gpu-160vcpu-1792gb`) |
 | SSH user | `jimmyshah-sshkey` |
 | SSH key (on the Mac) | `~/.ssh/id_ed25519_nebius` |
-| GPUs | 8× NVIDIA B200: 180 GB HBM3e (183,359 MiB in `nvidia-smi`) and 8 TB/s each (1,440 GB per node), NVLink 5 at 1.8 TB/s per GPU |
+| GPUs | 8× NVIDIA B200: HBM3e, 183,359 MiB (~179 GiB) each in `nvidia-smi` (~1,432 GiB per node), up to 8 TB/s each, NVLink 5 at 1.8 TB/s per GPU |
 | Host | 160 vCPU (2× Xeon Platinum 8580, 2 NUMA nodes), 1,792 GiB RAM |
 | Engine | vLLM v0.32.0, image `vllm/vllm-openai@sha256:befccf0e…5c5b34` (CUDA 13.0) |
 | Model | `deepseek-ai/DeepSeek-V4.1-Flash-1017`, revision `1bae0e1088993b9b82de08f59de5be5a34e42170` (~511 GB) |
-| Layout | Two replicas, each TP4 with the Engram tables offloaded to host RAM. This comes from the vLLM recipe's Hopper configuration; no B200 configuration was found on 2026-11-03. In the PD disaggregation phase, the same two GPU groups become one prefill engine and one decode engine |
+| Layout | Two replicas, each TP4, with the vLLM recipe's B200 settings: fp8 KV, FlashInfer sparse-MLA attention, and the Engram tables offloaded to host RAM. The recipe's own B200 default is TP2 for concurrency ~1 ([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md), decision 3). In the PD disaggregation phase, the same two GPU groups become one prefill engine and one decode engine |
 
 ## Prerequisites: a network and subnet for the node
 
@@ -410,11 +410,12 @@ and run `hf download $MODEL --revision $REV` directly.
 
 ### 10. Start the two replicas
 
-Each replica is one vLLM server on 4 GPUs. The baseline is the vLLM recipe's
-configuration, with tool calling and reasoning turned on and the vision
-encoder skipped. The recipe was written for Hopper GPUs; no B200 configuration
-was found on 2026-11-03. **Speculative decoding is off in the baseline.** Turning on
-DSpark is an experiment (O4 in the [PoC plan](poc.md)).
+Each replica is one vLLM server on 4 GPUs. The baseline uses the vLLM recipe's
+B200 settings at TP4, with tool calling and reasoning turned on and the vision
+encoder skipped. The recipe's B200 reference configuration (TP2, tuned for one
+user at a time) is in [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md).
+**Speculative decoding is off in the baseline.** Turning on DSpark is an
+experiment (O4 in the [PoC plan](poc.md)).
 
 ```bash
 # Define a helper that starts one replica as a background container.
@@ -424,17 +425,23 @@ DSpark is an experiment (O4 in the [PoC plan](poc.md)).
 #   --ipc=host            share host memory for inter-process communication
 #   -p 127.0.0.1:...      publish the port on the node's loopback only
 #   HF_HUB_OFFLINE=1      use the downloaded files and never re-download
-#   VLLM_ENGINE_READY_TIMEOUT_S=3600   the first start can take a long time
+#   VLLM_ENGINE_READY_TIMEOUT_S=7200   the first start can take a long time
+#   VLLM_USE_V2_MODEL_RUNNER=1, VLLM_USE_RUST_FRONTEND=1   from the recipe's
+#                         B200 configuration
 serve() {
   local name=$1 gpus=$2 port=$3; shift 3
   docker run -d --name "$name" --gpus "\"device=$gpus\"" --ipc=host \
     -p 127.0.0.1:$port:$port \
-    -e HF_HUB_OFFLINE=1 -e VLLM_ENGINE_READY_TIMEOUT_S=3600 \
+    -e HF_HUB_OFFLINE=1 -e VLLM_ENGINE_READY_TIMEOUT_S=7200 \
+    -e VLLM_USE_V2_MODEL_RUNNER=1 -e VLLM_USE_RUST_FRONTEND=1 \
     -v $HF_HOME:/root/.cache/huggingface -v $VLLM_CACHE:/root/.cache/vllm \
     --entrypoint vllm $IMG serve $MODEL --revision $REV \
       --tensor-parallel-size 4 \
       --tokenizer-mode deepseek_v41 \
-      --engram-config '{"cpu_offload":true}' \
+      --attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41","indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}' \
+      --kv-cache-dtype fp8 \
+      --kernel-config '{"enable_flashinfer_autotune":true}' \
+      --engram-config '{"cpu_offload":true,"use_thp":true}' \
       --language-model-only \
       --tool-call-parser deepseek_v41 --enable-auto-tool-choice \
       --reasoning-parser deepseek_v41 \
@@ -456,7 +463,10 @@ What the flags do:
 | `--revision` | Load the exact commit pinned above |
 | `--tensor-parallel-size 4` | Split each layer across 4 GPUs. Two TP4 replicas fill the node |
 | `--tokenizer-mode deepseek_v41` | Encode prompts with DeepSeek's Python encoder. The repo ships no Jinja chat template |
-| `--engram-config '{"cpu_offload":true}'` | Keep the Engram n-gram tables (183 GiB) in pinned host RAM instead of HBM. On Hopper, the recipe reports 23.6 GiB moved off each GPU and ~38.5 GiB of KV cache left per GPU, and says the KV pool collapses without the offload. A B200 has ~39 GB more HBM per GPU, so that hasn't been shown for this node. The recipe's figures don't add up to the 183 GiB table size, so measure host and GPU memory yourself |
+| `--attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41",…}'` | The recipe's Blackwell attention backend for the TP layout, with the indexer's keys in MXFP4 and sparse indexer logits. The recipe documents it with TP2, so check that it starts at TP4 (ADR 0002, open question 3) |
+| `--kv-cache-dtype fp8` | Store the KV cache in FP8, as the recipe does on Blackwell. Switching back to auto is experiment O7 |
+| `--kernel-config '{"enable_flashinfer_autotune":true}'` | Let FlashInfer benchmark its kernel variants at startup and keep the fastest. The results land in the vLLM cache |
+| `--engram-config '{"cpu_offload":true,"use_thp":true}'` | Keep the Engram n-gram tables (183 GiB) in pinned host RAM instead of HBM, backed by transparent huge pages. The GPUs read rows through UVA. The recipe has no B200 memory figures. On Hopper it reports 23.6 GiB moved off each GPU, and those figures don't add up to the 183 GiB table size. So measure host and GPU memory yourself |
 | `--language-model-only` | Skip the vision encoder. The coding workload is text only, so this frees memory for KV cache |
 | `--tool-call-parser deepseek_v41 --enable-auto-tool-choice` | Turn the model's DSML tool-call blocks into OpenAI `tool_calls` |
 | `--reasoning-parser deepseek_v41` | Return the thinking in `reasoning_content`, separate from the answer |
