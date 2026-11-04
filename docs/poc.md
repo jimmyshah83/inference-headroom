@@ -408,6 +408,37 @@ same targets.
 **After the PoC:** turn the experiment log into two shareable Claude skills,
 one for prefill and one for decode. See the [skills plan](skills-plan.md).
 
+## Later: image input on one TP8 replica
+
+The PoC is text only. Every configuration above runs with
+`--language-model-only`, so vLLM never loads the vision encoder. Image input
+is a later step. It isn't part of the done criteria, and it runs only after
+the text work, if node time is left before the release date.
+
+- **Why one TP8 replica:** a single replica on all 8 GPUs has the most HBM for
+  the extra KV cache that image tokens need, and for the memory vLLM reserves
+  for worst-case images at startup. O1's 1×TP8 point is the text-only
+  baseline to compare against. If TP8 doesn't start in O1, use one TP4
+  replica instead.
+- **Change:** take O1's TP8 configuration and replace `--language-model-only`
+  with `--limit-mm-per-prompt '{"image": N}'`, where N is the most images a
+  request needs. Start with 1.
+- **Measure:**
+  - The cost of turning images on: KV cache memory and token capacity from the
+    startup log, and startup time, with and without the flag.
+  - Text traffic with images on: B1 and B3 at a few concurrencies, compared
+    with O1's TP8 point. Text-only requests shouldn't get slower.
+  - Image requests: TTFT and prompt tokens per image at a few resolutions.
+    config.json caps an image at 1,024 tokens. For load, use a mixed workload,
+    such as agent turns that include a screenshot. Check
+    `aiperf profile --help` for its image options.
+  - Repeated images: send the same screenshot again in later turns and check
+    that prefix caching reuses it.
+- **Quality:** a smoke test with an image whose answer is known, such as a
+  screenshot of an error message that the reply has to quote. This also
+  confirms that `--tokenizer-mode deepseek_v41` passes images through, which
+  hasn't been verified for this model.
+
 ## Schedule
 
 | Week | Dates | PoC work |

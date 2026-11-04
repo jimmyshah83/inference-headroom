@@ -161,7 +161,8 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
 2. **Model:** `deepseek-ai/DeepSeek-V4.1-Flash-1017` at revision
    `1bae0e1088993b9b82de08f59de5be5a34e42170`, text only
    (`--language-model-only`), with the `deepseek_v41` tool-call and reasoning
-   parsers.
+   parsers. Image input is a later step on one TP8 replica, after the text
+   work ([poc.md](../poc.md#later-image-input-on-one-tp8-replica)).
 3. **Baseline layout:** two TP4 replicas with the recipe's B200 settings from
    the reference configuration:
    - `FLASHINFER_MLA_SPARSE_DSV41` attention with an MXFP4 indexer

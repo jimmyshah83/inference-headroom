@@ -533,7 +533,7 @@ What the flags do:
 | `--kv-cache-dtype fp8` | Store the KV cache in FP8, as the recipe does on Blackwell. Switching back to auto is experiment O7 |
 | `--kernel-config '{"enable_flashinfer_autotune":true}'` | Let FlashInfer benchmark its kernel variants at startup and keep the fastest. The results land in the vLLM cache |
 | `--engram-config '{"cpu_offload":true,"use_thp":true}'` | Keep the Engram n-gram tables (183 GiB) in pinned host RAM instead of HBM, backed by transparent huge pages. The GPUs read rows through UVA. The recipe has no B200 memory figures. On Hopper it reports 23.6 GiB moved off each GPU, and those figures don't add up to the 183 GiB table size. So measure host and GPU memory yourself |
-| `--language-model-only` | Skip the vision encoder. The coding workload is text only, so this frees memory for KV cache |
+| `--language-model-only` | Skip the vision encoder. The coding workload is text only, so this frees memory for KV cache. Image input is a later step on one TP8 replica ([PoC plan](poc.md#later-image-input-on-one-tp8-replica)) |
 | `--tool-call-parser deepseek_v41 --enable-auto-tool-choice` | Turn the model's DSML tool-call blocks into OpenAI `tool_calls` |
 | `--reasoning-parser deepseek_v41` | Return the thinking in `reasoning_content`, separate from the answer |
 | `--host 0.0.0.0 --port …` | Listen on every interface inside the container. Docker exposes the port only on the node's loopback |
