@@ -483,10 +483,19 @@ user at a time) is in [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-o
 **Speculative decoding is off in the baseline.** Turning on DSpark is an
 experiment (O4 in the [PoC plan](poc.md)).
 
+Save the start command as a script on the node, `~/serve.sh`. The experiments
+restart replicas many times, and a script is still there after you reconnect.
+It reads the settings from step 9, and it stops with an error if one of them is
+missing.
+
 ```bash
-# Define a helper that starts one replica as a background container.
-#   $1 container name, $2 GPU list, $3 port. Any further arguments are
-#   passed through to "vllm serve" as extra flags.
+# Write the script. The quoted 'EOF' keeps $IMG, $MODEL and the others as
+# written, so the script reads them from ~/.bashrc's exported settings each
+# time it runs.
+cat > ~/serve.sh <<'EOF'
+#!/usr/bin/env bash
+# Start one vLLM replica as a background container (getting-started step 10).
+# Usage: ~/serve.sh NAME GPUS PORT [extra "vllm serve" flags...]
 #   --gpus "device=..."   give the container only these GPUs
 #   --ipc=host            share host memory for inter-process communication
 #   -p 127.0.0.1:...      publish the port on the node's loopback only
@@ -494,29 +503,34 @@ experiment (O4 in the [PoC plan](poc.md)).
 #   VLLM_ENGINE_READY_TIMEOUT_S=7200   the first start can take a long time
 #   VLLM_USE_V2_MODEL_RUNNER=1, VLLM_USE_RUST_FRONTEND=1   from the recipe's
 #                         B200 configuration
-serve() {
-  local name=$1 gpus=$2 port=$3; shift 3
-  docker run -d --name "$name" --gpus "\"device=$gpus\"" --ipc=host \
-    -p 127.0.0.1:$port:$port \
-    -e HF_HUB_OFFLINE=1 -e VLLM_ENGINE_READY_TIMEOUT_S=7200 \
-    -e VLLM_USE_V2_MODEL_RUNNER=1 -e VLLM_USE_RUST_FRONTEND=1 \
-    -v $HF_HOME:/root/.cache/huggingface -v $VLLM_CACHE:/root/.cache/vllm \
-    --entrypoint vllm $IMG serve $MODEL --revision $REV \
-      --tensor-parallel-size 4 \
-      --tokenizer-mode deepseek_v41 \
-      --attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41","indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}' \
-      --kv-cache-dtype fp8 \
-      --kernel-config '{"enable_flashinfer_autotune":true}' \
-      --engram-config '{"cpu_offload":true,"use_thp":true}' \
-      --language-model-only \
-      --tool-call-parser deepseek_v41 --enable-auto-tool-choice \
-      --reasoning-parser deepseek_v41 \
-      --host 0.0.0.0 --port $port "$@"
-}
+# set -u stops the script if a setting or argument is missing.
+set -euo pipefail
+name=$1 gpus=$2 port=$3; shift 3
+docker run -d --name "$name" --gpus "\"device=$gpus\"" --ipc=host \
+  -p 127.0.0.1:$port:$port \
+  -e HF_HUB_OFFLINE=1 -e VLLM_ENGINE_READY_TIMEOUT_S=7200 \
+  -e VLLM_USE_V2_MODEL_RUNNER=1 -e VLLM_USE_RUST_FRONTEND=1 \
+  -v $HF_HOME:/root/.cache/huggingface -v $VLLM_CACHE:/root/.cache/vllm \
+  --entrypoint vllm $IMG serve $MODEL --revision $REV \
+    --tensor-parallel-size 4 \
+    --tokenizer-mode deepseek_v41 \
+    --attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41","indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}' \
+    --kv-cache-dtype fp8 \
+    --kernel-config '{"enable_flashinfer_autotune":true}' \
+    --engram-config '{"cpu_offload":true,"use_thp":true}' \
+    --language-model-only \
+    --tool-call-parser deepseek_v41 --enable-auto-tool-choice \
+    --reasoning-parser deepseek_v41 \
+    --host 0.0.0.0 --port $port "$@"
+EOF
 
-# Start replica A on GPUs 0-3 and replica B on GPUs 4-7.
-serve vllm-a 0,1,2,3 8000
-serve vllm-b 4,5,6,7 8001
+# Make the script executable.
+chmod +x ~/serve.sh
+
+# Start replica A on GPUs 0-3 and replica B on GPUs 4-7. The containers run in
+# the background (docker run -d), so they keep running after you disconnect.
+~/serve.sh vllm-a 0,1,2,3 8000
+~/serve.sh vllm-b 4,5,6,7 8001
 
 # Follow replica A's startup log. Ctrl-C stops following; the server keeps running.
 docker logs -f vllm-a
@@ -541,6 +555,17 @@ What the flags do:
 vLLM's defaults apply to everything else: prefix caching on, a GPU memory
 utilization of 0.9, and the default scheduler token budget. The experiments in
 the PoC plan change these one at a time.
+
+To change a flag, remove the replica and start it again with the flag added.
+Docker won't reuse a container name while a container with that name exists,
+even a stopped one.
+
+```bash
+# Remove replica A, then start it again with a higher GPU memory utilization.
+# Any arguments after the port go to "vllm serve".
+docker rm -f vllm-a
+~/serve.sh vllm-a 0,1,2,3 8000 --gpu-memory-utilization 0.92
+```
 
 Both replicas read the same 511 GB from disk, so the first start is slow. Once
 the files are in the page cache, the second replica and later restarts are
