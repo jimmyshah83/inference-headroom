@@ -152,6 +152,8 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
    - It updates the 1017 reference encoding (#62199, #62200).
    - It fixes DeepSeek-V4.1 Engram and compressed-KV bugs.
    - Its Rust frontend rejects unsupported flags instead of ignoring them.
+     (It still ignores `--enable-auto-tool-choice`, with a warning; see open
+     question 4.)
    - It's still CUDA 13.0, which matches the node's driver.
 
    The vLLM recipe has B200 configurations for this model (TP2, DEP8) and
@@ -172,9 +174,10 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
    - `VLLM_USE_V2_MODEL_RUNNER=1` and `VLLM_USE_RUST_FRONTEND=1`
 
    vLLM's defaults apply to everything else: memory utilization, scheduler
-   budget and CUDA graph sizes. Compile mode also stays at its default
-   (`NONE`) until open question 7 is answered. Speculative decoding is **off**
-   in the baseline; DSpark is experiment O4.
+   budget and CUDA graph sizes. Compile mode stays at its default, `NONE`:
+   v0.33.0 sets it back to `NONE` for this model even when `VLLM_COMPILE` is
+   passed (open question 7). Speculative decoding is **off** in the baseline;
+   DSpark is experiment O4.
 
    The recipe's TP2 default is not the baseline, for three reasons:
    - It targets concurrency ~1, at 8 sequences and 0.97 memory utilization,
@@ -277,17 +280,26 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
    `enable_flashinfer_autotune`)? The recipe's AgentX presets use a nightly
    image. v0.33.0's Rust frontend rejects unsupported `vllm serve` flags, so
    the first start answers this for flags. Unknown environment variables may
-   still be ignored without an error.
+   still be ignored without an error. **Partly answered 2026-11-04:** every
+   flag was accepted, but the frontend warned that `enable_auto_tool_choice`
+   "currently has no effect in Rust frontend, ignoring". Getting-started
+   step 11's tool-call request shows whether tool calls still come back as
+   `tool_calls`.
 5. What is DSpark's acceptance length on coding traffic at concurrency 1–32?
    Does adaptive verification help? The reference configuration turns it off.
 6. Can a 1P1D layout (TP4 prefill and TP4 decode, KV over NIXL) run on a
    single node?
 7. Does torch.compile (`--compilation-config '{"mode":"VLLM_COMPILE"}'`) start
-   at TP4 with the V2 model runner? On 2026-11-04, v0.33.0's default for this
-   model was compile mode `NONE`, so the baseline runs without compiler fusions
-   and possibly without piecewise CUDA graphs. The reference configuration sets
-   `VLLM_COMPILE`. If it starts, the baseline adds it and keeps the default CUDA
-   graph sizes.
+   at TP4 with the V2 model runner? **Answered 2026-11-04: the flag is
+   accepted, but the engine resolves compile mode to `NONE` anyway.** v0.33.0
+   turns on breakable CUDA graphs (`VLLM_USE_BREAKABLE_CUDAGRAPH=1`) by default
+   for `DeepseekV41ForCausalLM`, and whenever they're on it sets compile mode
+   to `NONE` (`vllm/config/vllm.py`). A source comment says this architecture
+   "cannot torch.compile". So the reference configuration's `VLLM_COMPILE` has
+   no effect either, and the baseline keeps the default. The norm_quant,
+   act_quant and allreduce_rms fusions that the log lists as enabled are
+   Inductor passes, so they most likely don't run. See getting-started's
+   [CUDA graphs](../getting-started.md#cuda-graphs) section.
 
 ## References
 

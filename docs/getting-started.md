@@ -548,15 +548,16 @@ What the flags do:
 | `--kernel-config '{"enable_flashinfer_autotune":true}'` | Let FlashInfer benchmark its kernel variants at startup and keep the fastest. The results land in the vLLM cache |
 | `--engram-config '{"cpu_offload":true,"use_thp":true}'` | Keep the Engram n-gram tables (183 GiB) in pinned host RAM instead of HBM, backed by transparent huge pages. The GPUs read rows through UVA. The recipe has no B200 memory figures. On Hopper it reports 23.6 GiB moved off each GPU, and those figures don't add up to the 183 GiB table size. So measure host and GPU memory yourself |
 | `--language-model-only` | Skip the vision encoder. The coding workload is text only, so this frees memory for KV cache. Image input is a later step on one TP8 replica ([PoC plan](poc.md#later-image-input-on-one-tp8-replica)) |
-| `--tool-call-parser deepseek_v41 --enable-auto-tool-choice` | Turn the model's DSML tool-call blocks into OpenAI `tool_calls` |
+| `--tool-call-parser deepseek_v41 --enable-auto-tool-choice` | Turn the model's DSML tool-call blocks into OpenAI `tool_calls`. The Rust frontend warns that it ignores `--enable-auto-tool-choice`; step 11's tool-call request checks that tool calls still come back |
 | `--reasoning-parser deepseek_v41` | Return the thinking in `reasoning_content`, separate from the answer |
 | `--host 0.0.0.0 --port …` | Listen on every interface inside the container. Docker exposes the port only on the node's loopback |
 
 vLLM's defaults apply to everything else: prefix caching on, a GPU memory
 utilization of 0.9, the default scheduler token budget and CUDA graph sizes,
 and no torch.compile. The experiments in the PoC plan change these one at a
-time. The recipe's reference configuration turns torch.compile on; whether the
-baseline should too is checked at the end of this step.
+time. The recipe's reference configuration asks for torch.compile, but v0.33.0
+turns it back off for this model ([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md),
+open question 7).
 
 To change a flag, remove the replica and start it again with the flag added.
 Docker won't reuse a container name while a container with that name exists,
@@ -573,6 +574,68 @@ Both replicas read the same 511 GB from disk, so the first start is slow. Once
 the files are in the page cache, the second replica and later restarts are
 faster. A replica is ready when its log shows `Application startup complete`.
 
+#### CUDA graphs
+
+In decode, each step runs one token per request, so each kernel does little
+work. Launching hundreds of kernels from the CPU can then take longer than
+running them. A CUDA graph records one step's kernel launches at startup and
+replays them all with a single launch. A graph has a fixed shape, so vLLM
+captures one for each size in `cudagraph_capture_sizes` (counted in tokens) and
+pads each step up to the next captured size.
+
+How v0.33.0 runs this model, from vLLM's
+[CUDA graphs design doc](https://github.com/vllm-project/vllm/blob/v0.33.0/docs/design/cuda_graphs.md)
+and the v0.33.0 source:
+
+- **Full graphs for decode, piecewise graphs for prefill.** The default mode
+  is `FULL_AND_PIECEWISE`. A step in which every request is decoding (one
+  token each, or 1 + drafts with DSpark) replays one graph of the whole forward
+  pass. A step with any prefill in it uses piecewise graphs: the parts between
+  attention ops are graphs, and attention runs eagerly in between. This mode is
+  usually the fastest, but it also takes the most memory and the longest to
+  capture.
+- **Breakable graphs, not torch.compile.** Piecewise graphs normally come from
+  splitting the torch.compile graph at attention. DeepSeek-V4.1 can't be
+  torch.compiled, so v0.33.0 turns on breakable CUDA graphs for it
+  (`VLLM_USE_BREAKABLE_CUDAGRAPH=1`), and that sets the compile mode to `NONE`
+  (`vllm/config/vllm.py`). Breakable graphs split during capture instead:
+  capture stops at each attention or KV cache op, runs it eagerly, and resumes
+  (`vllm/compilation/breakable_cudagraph.py`). This is why the recipe's
+  `"mode":"VLLM_COMPILE"` has no effect.
+- **Capture sizes and padding.** The default sizes are 1, 2, 4, 8, then every
+  8 up to 256 and every 16 up to 1,024 tokens. A 9-request decode step runs in
+  the 16-token graph. A step larger than 1,024 tokens has no graph and runs
+  eagerly. In decode that only happens above 1,024 requests (170 with DSpark's
+  6 tokens per request). Prefill chunks are often larger, since the budget is
+  16,384 tokens, so long prefills run eagerly. Prefill is compute-bound, so
+  launch overhead matters less there.
+- **Decoder replay graphs.** In prefill, layers 21–39 run only on each
+  request's last 128 tokens (the `Decoder SWA bounded replay` line in the log).
+  `cudagraph_decoder_replay`, on by default, gives those layers CUDA graphs of
+  their own. Their sizes default to multiples of the model's sliding window,
+  up to the 1,024-token maximum, and larger replay batches run eagerly.
+  Piecewise steps of at least 768 padded tokens (`decoder_replay_trim_threshold`)
+  trim the replay batch to those last tokens; smaller piecewise steps don't.
+  Eager steps always trim.
+- **Fusions.** The log line `Enabled custom fusions: norm_quant, act_quant,
+  allreduce_rms` only lists settings for torch.compile (Inductor) passes.
+  Inductor doesn't run with compile mode `NONE`, so these most likely have no
+  effect. The model's own fused kernels (RMSNorm, gate, attention and
+  all-reduce, described in the
+  [vLLM blog post](https://vllm.ai/blog/2026-10-07-deepseek-v41-flash)) don't
+  depend on torch.compile.
+- **Memory and startup time.** Graphs use GPU memory that would otherwise go to
+  the KV cache, and capturing them adds to the startup time. The log reports
+  both.
+- **Attention backend support.** Full graphs need support from the attention
+  backend; if a backend can't support the requested mode, vLLM downgrades the
+  mode. The design doc lists FlashInferMLASparse as supporting full graphs for
+  uniform batches, which includes DSpark's 1 + drafts. It doesn't list the
+  `FLASHINFER_MLA_SPARSE_DSV41` variant used here, so check the capture lines.
+
+Experiment O9 changes `--max-num-seqs` and the capture sizes. O4 turns on
+DSpark, which makes each decode step 6 tokens per request.
+
 Record these from each replica's startup log:
 
 - The KV cache memory available and the number of tokens the KV cache can hold.
@@ -582,7 +645,8 @@ Record these from each replica's startup log:
   compute). The kernel sets the compute ceiling for the expert layers (the FP4,
   FP8 or BF16 rate), which changes the analytical model.
 - The Engram offload message and how much host memory it pinned.
-- How long the start took, split into weight loading and CUDA graph capture.
+- How long the start took, split into weight loading and CUDA graph capture,
+  and how much GPU memory the CUDA graphs took.
 - **The scheduler, CUDA graph and compile settings the defaults resolved to.**
   The baseline leaves them unset, and vLLM picks some defaults by GPU, so these
   are what experiments O5 and O9 change from. The search below prints the log
@@ -594,9 +658,11 @@ Record these from each replica's startup log:
     step up to the 128 requests the baseline sweeps reach.
   - `max_num_seqs`: not in the log. B1 checks that it isn't the limit at
     concurrency 128 ([PoC plan](poc.md#performance-benchmarks)).
-  - Compile mode: `NONE`, so torch.compile is off. The recipe's reference
-    configuration sets `VLLM_COMPILE`. The checks below show which CUDA graphs
-    were captured without it, then try turning it on.
+  - Compile mode: `NONE`, so torch.compile is off. Turning on breakable CUDA
+    graphs for this model sets it to `NONE` ([CUDA graphs](#cuda-graphs)).
+    Passing `--compilation-config '{"mode":"VLLM_COMPILE"}'` doesn't change
+    this: the frontend accepted it, but the engine config line still showed
+    `NONE`, with the same capture sizes.
 
 ```bash
 # Print replica A's startup log lines that mention the scheduler and CUDA graph
@@ -606,42 +672,32 @@ docker logs vllm-a 2>&1 \
   | grep -E 'max_num_seqs|max_num_batched_tokens|cudagraph_capture_sizes|max_cudagraph_capture_size'
 ```
 
-Without torch.compile, the fusions listed under `pass_config` (such as
-`fuse_norm_quant` and `fuse_allreduce_rms`) probably don't run, because they
-are compile passes. Piecewise CUDA graphs are also built from the compiled
-model, so the log's `FULL_AND_PIECEWISE` may not be what vLLM actually
-captured. Without them, steps that mix prefill and decode run without CUDA
-graphs. Check what it captured:
+- **Warnings, and the CUDA graph, fusion and replay lines.** The search below
+  prints them. On 2026-11-04, replica A's log showed:
+  - `Auto-enabling VLLM_USE_BREAKABLE_CUDAGRAPH=1`: breakable CUDA graphs,
+    which also set compile mode to `NONE` ([CUDA graphs](#cuda-graphs)).
+  - `Enabled custom fusions: norm_quant, act_quant, allreduce_rms`: settings
+    for torch.compile passes, which most likely have no effect with compile
+    mode `NONE`.
+  - `Decoder SWA bounded replay`, on by default: in prefill, layer 20 writes
+    its KV for every token, and layers 21–39 run only on each request's last
+    128 tokens.
+  - `argument 'enable_auto_tool_choice' currently has no effect in Rust
+    frontend, ignoring`. Step 11's tool-call request checks that tool calls
+    still come back as `tool_calls`.
+
+  Run the search again after `Application startup complete`. Record which
+  CUDA graphs were captured (the `Capturing CUDA graphs` lines), how long
+  capture took, and how much memory the graphs use.
 
 ```bash
-# Print the CUDA graph capture and compile lines, leaving out the long engine
-# config line.
-docker logs vllm-a 2>&1 | grep -iE 'capturing|cudagraph|piecewise|compil' \
-  | grep -v 'Initializing a V1'
+# Print warnings and the compile, CUDA graph and replay lines, leaving out the
+# three long config lines. "cuda ?graph" matches both "cudagraph" and
+# "CUDA graph".
+docker logs vllm-a 2>&1 \
+  | grep -iE 'warn|compil|cuda ?graph|capturing|piecewise|eager|replay' \
+  | grep -vE 'non-default args|Launching Rust frontend|Initializing a V1'
 ```
-
-Then try torch.compile on replica A ([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md),
-open question 7). The default CUDA graph sizes stay. The first start takes
-longer while it compiles. The result is saved in `$VLLM_CACHE`, so later starts
-reuse it.
-
-```bash
-# Restart replica A with torch.compile on.
-docker rm -f vllm-a
-~/serve.sh vllm-a 0,1,2,3 8000 --compilation-config '{"mode":"VLLM_COMPILE"}'
-
-# Once it's ready, the engine config line should show VLLM_COMPILE instead of
-# NONE, and the capture lines should include piecewise graphs.
-docker logs vllm-a 2>&1 | grep -oE "'mode': <CompilationMode[^>]*>"
-docker logs vllm-a 2>&1 | grep -iE 'capturing|cudagraph|piecewise|compil' \
-  | grep -v 'Initializing a V1'
-```
-
-Record whether it started, how long compiling took, and what it captured. If it
-works, the flag goes into `~/serve.sh` and the baseline, and replica B restarts
-with it too. If it fails, record the error in ADR 0002 and restart replica A
-without it. **Either way, both replicas must run the same settings before any
-baseline run.**
 
 ### 11. Test it from the Mac
 
