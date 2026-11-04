@@ -96,6 +96,16 @@ for c in 1 2 4 8 16 32 64 128; do
 done
 ```
 
+`max_num_seqs` isn't in the startup log, so check during the concurrency-128
+point that it isn't what limits the batch:
+
+```bash
+# On the node, while the c=128 point runs. If running reaches 128, max_num_seqs
+# isn't the limit. If it stays below 128 and waiting is above 0, check KV cache
+# usage before blaming max_num_seqs.
+curl -s localhost:8000/metrics | grep -E '^vllm:num_requests_(running|waiting)'
+```
+
 **B2. Multi-turn with a shared prefix (synthetic agent).** Each run has 8-turn
 conversations, an 8k-token shared system prompt, and 24k tokens of per-session
 context. This isolates prefix caching.
@@ -250,7 +260,7 @@ the explanation. Each phase also feeds one of the future skills
 | # | Variable | Baseline → variant | What to look for |
 |---|---|---|---|
 | O6 | Prefix caching | on → off (B2 and B3 only) | How much of the agent's TTFT the cache is saving. Do this first, because it sets how much real prefill is left to optimize |
-| O5 | Chunked-prefill token budget | default → `--max-num-batched-tokens` 2k / 8k / 16k | TTFT vs inter-token latency: large chunks finish prefills sooner but stall the decodes sharing the batch (Kiely §5.5). Record both metrics, because this knob affects decode too |
+| O5 | Chunked-prefill token budget | default (16,384 on v0.33.0) → `--max-num-batched-tokens` 2k / 4k (the recipe's value) / 8k / 32k | TTFT vs inter-token latency: large chunks finish prefills sooner but stall the decodes sharing the batch (Kiely §5.5). Record both metrics, because this knob affects decode too |
 
 ### Decode optimization
 
@@ -258,7 +268,7 @@ the explanation. Each phase also feeds one of the future skills
 |---|---|---|---|
 | O1 | Parallel layout | 2×TP4 → 4×TP2 → 1×TP8 → DEP8 (`--data-parallel-size 8 --enable-expert-parallel`) | Per-GPU throughput vs per-user speed. TP2 is the recipe's B200 default; run it with the baseline's other settings, then once as the full reference configuration in ADR 0002 (DSpark on, 8 sequences). TP8 halves per-GPU weights vs TP4 but doubles all-reduce traffic. The recipe lists DEP8 for B200 nodes; TP8 is **unverified**. The layout also changes prefill speed; record TTFT too |
 | O9 | Batch and CUDA graph sizes | default → `--max-num-seqs` 32 / 64 / 128; `--max-cudagraph-capture-size` ≥ batch × (1 + 5 drafts) | Where per-user speed falls off as the batch grows, and whether decode steps fall outside the captured graphs |
-| O4 | Speculative decoding | off → DSpark with the reference configuration's `--speculative-config` (5 tokens, probabilistic drafts, block rejection, adaptive verification off); then adaptive verification on; then 1–5 tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1) |
+| O4 | Speculative decoding | off → DSpark with the reference configuration's `--speculative-config` (5 tokens, probabilistic drafts, block rejection, adaptive verification off), together with its `--compilation-config` and `--max-cudagraph-capture-size`; then adaptive verification on; then 1–5 tokens, with the capture sizes rebuilt as multiples of 1 + tokens | Acceptance length on coding traffic, and speedup vs concurrency. Expect the gain to shrink as batches grow (Kiely §5.2.1). Each decode step runs batch × (1 + drafts) tokens. With DSpark off, v0.33.0's default capture sizes reach 1,024 tokens in steps of 8 and 16: enough for 170 requests at 6 tokens each, but padded (7 × 6 = 42 tokens runs in the 48 graph). vLLM may change the sizes when DSpark is on, and steps without a CUDA graph would understate DSpark's speedup. So check the capture sizes in the startup log |
 | O2 | Engram placement | offload on → off (at TP4 the tables add ~46 GiB per GPU, which a B200 may hold) | What host lookups cost per decode step, and how much KV cache they buy |
 | O3 | NUMA pinning | none → each replica's container bound to its GPUs' socket: replica A `--cpuset-cpus 0-79 --cpuset-mems 0`, replica B `--cpuset-cpus 80-159 --cpuset-mems 1` | Step time and tail latency, given the per-step Engram reads from host memory |
 | O7 | KV cache dtype | fp8 (baseline, from the recipe) → auto, if the attention backend accepts it | What fp8 KV costs in accuracy (gate A2) and buys in KV capacity |

@@ -553,8 +553,10 @@ What the flags do:
 | `--host 0.0.0.0 --port …` | Listen on every interface inside the container. Docker exposes the port only on the node's loopback |
 
 vLLM's defaults apply to everything else: prefix caching on, a GPU memory
-utilization of 0.9, and the default scheduler token budget. The experiments in
-the PoC plan change these one at a time.
+utilization of 0.9, the default scheduler token budget and CUDA graph sizes,
+and no torch.compile. The experiments in the PoC plan change these one at a
+time. The recipe's reference configuration turns torch.compile on; whether the
+baseline should too is checked at the end of this step.
 
 To change a flag, remove the replica and start it again with the flag added.
 Docker won't reuse a container name while a container with that name exists,
@@ -581,6 +583,65 @@ Record these from each replica's startup log:
   FP8 or BF16 rate), which changes the analytical model.
 - The Engram offload message and how much host memory it pinned.
 - How long the start took, split into weight loading and CUDA graph capture.
+- **The scheduler, CUDA graph and compile settings the defaults resolved to.**
+  The baseline leaves them unset, and vLLM picks some defaults by GPU, so these
+  are what experiments O5 and O9 change from. The search below prints the log
+  lines that hold them. On 2026-11-04, replica A's log showed:
+  - `max_num_batched_tokens`: 16,384, with chunked prefill on. O5 starts from
+    this.
+  - `cudagraph_capture_sizes`: 1, 2, 4, 8, then every 8 up to 256 and every 16
+    up to 1,024 (`max_cudagraph_capture_size` 1,024). That covers every decode
+    step up to the 128 requests the baseline sweeps reach.
+  - `max_num_seqs`: not in the log. B1 checks that it isn't the limit at
+    concurrency 128 ([PoC plan](poc.md#performance-benchmarks)).
+  - Compile mode: `NONE`, so torch.compile is off. The recipe's reference
+    configuration sets `VLLM_COMPILE`. The checks below show which CUDA graphs
+    were captured without it, then try turning it on.
+
+```bash
+# Print replica A's startup log lines that mention the scheduler and CUDA graph
+# settings. The engine config line is long; the values are inside it, and so
+# is the compile mode ('mode': <CompilationMode...>).
+docker logs vllm-a 2>&1 \
+  | grep -E 'max_num_seqs|max_num_batched_tokens|cudagraph_capture_sizes|max_cudagraph_capture_size'
+```
+
+Without torch.compile, the fusions listed under `pass_config` (such as
+`fuse_norm_quant` and `fuse_allreduce_rms`) probably don't run, because they
+are compile passes. Piecewise CUDA graphs are also built from the compiled
+model, so the log's `FULL_AND_PIECEWISE` may not be what vLLM actually
+captured. Without them, steps that mix prefill and decode run without CUDA
+graphs. Check what it captured:
+
+```bash
+# Print the CUDA graph capture and compile lines, leaving out the long engine
+# config line.
+docker logs vllm-a 2>&1 | grep -iE 'capturing|cudagraph|piecewise|compil' \
+  | grep -v 'Initializing a V1'
+```
+
+Then try torch.compile on replica A ([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md),
+open question 7). The default CUDA graph sizes stay. The first start takes
+longer while it compiles. The result is saved in `$VLLM_CACHE`, so later starts
+reuse it.
+
+```bash
+# Restart replica A with torch.compile on.
+docker rm -f vllm-a
+~/serve.sh vllm-a 0,1,2,3 8000 --compilation-config '{"mode":"VLLM_COMPILE"}'
+
+# Once it's ready, the engine config line should show VLLM_COMPILE instead of
+# NONE, and the capture lines should include piecewise graphs.
+docker logs vllm-a 2>&1 | grep -oE "'mode': <CompilationMode[^>]*>"
+docker logs vllm-a 2>&1 | grep -iE 'capturing|cudagraph|piecewise|compil' \
+  | grep -v 'Initializing a V1'
+```
+
+Record whether it started, how long compiling took, and what it captured. If it
+works, the flag goes into `~/serve.sh` and the baseline, and replica B restarts
+with it too. If it fails, record the error in ADR 0002 and restart replica A
+without it. **Either way, both replicas must run the same settings before any
+baseline run.**
 
 ### 11. Test it from the Mac
 

@@ -172,8 +172,9 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
    - `VLLM_USE_V2_MODEL_RUNNER=1` and `VLLM_USE_RUST_FRONTEND=1`
 
    vLLM's defaults apply to everything else: memory utilization, scheduler
-   budget and CUDA graph sizes. Speculative decoding is **off** in the
-   baseline; DSpark is experiment O4.
+   budget and CUDA graph sizes. Compile mode also stays at its default
+   (`NONE`) until open question 7 is answered. Speculative decoding is **off**
+   in the baseline; DSpark is experiment O4.
 
    The recipe's TP2 default is not the baseline, for three reasons:
    - It targets concurrency ~1, at 8 sequences and 0.97 memory utilization,
@@ -281,6 +282,12 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
    Does adaptive verification help? The reference configuration turns it off.
 6. Can a 1P1D layout (TP4 prefill and TP4 decode, KV over NIXL) run on a
    single node?
+7. Does torch.compile (`--compilation-config '{"mode":"VLLM_COMPILE"}'`) start
+   at TP4 with the V2 model runner? On 2026-11-04, v0.33.0's default for this
+   model was compile mode `NONE`, so the baseline runs without compiler fusions
+   and possibly without piecewise CUDA graphs. The reference configuration sets
+   `VLLM_COMPILE`. If it starts, the baseline adds it and keeps the default CUDA
+   graph sizes.
 
 ## References
 
