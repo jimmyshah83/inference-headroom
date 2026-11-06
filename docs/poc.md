@@ -190,57 +190,93 @@ underscore spelling.
 ### Coding-agent traces (the workload)
 
 These are SemiAnalysis's Claude Code traces, the same dataset InferenceX used
-for its DeepSeek-V4.1-Flash agentic sweep. The concurrencies are InferenceX's:
-1, 2, 4, 8, 16 and 32.
+for its DeepSeek-V4.1-Flash agentic sweep. They are replayed under InferenceX's
+AgentX scenario (`--scenario inferencex-agentx-mvp`), AIPerf's locked method
+for this dataset. The concurrencies are InferenceX's: 1, 2, 4, 8, 16 and 32.
 
-**Every run uses exactly this command.** Only `RUN` and the server change
-between runs, so a difference in the results comes from the server. If the
-command has to change, run the baseline again with the new command.
+**Every run uses exactly this workload.**
+[`scripts/sweep_traces.py`](../scripts/sweep_traces.py) holds the AIPerf flags
+as fixed constants. Only the run name and the server change between runs, so a
+difference in the results comes from the server. If a constant has to change,
+run the baseline again with the new value.
+
+The script runs one AIPerf profile per concurrency (1, 2, 4, 8, 16, 32), because
+the scenario refuses a sweep in one command. Each point primes its
+trajectories' caches, warms up for 2 more minutes, then measures for 15
+minutes. The grace period lets responses that started before the deadline
+finish and count. A full sweep takes about 2 hours.
 
 ```bash
-# Replay the 256k-capped trace set, one AIPerf run per concurrency, without the
-# recorded think-time gaps, after a 2-minute agentic cache warm-up. Each point
-# runs 15 minutes, and the grace period lets responses that started before the
-# deadline finish and count. The whole loop takes about 2 hours. On the Mac,
-# run it under "caffeinate -i" so the laptop doesn't sleep.
-for c in 1 2 4 8 16 32; do
-  aiperf profile --model deepseek-ai/DeepSeek-V4.1-Flash-1017 \
-    --url http://localhost:8000 --endpoint-type chat --streaming \
-    --tokenizer deepseek-ai/DeepSeek-V4.1-Flash-1017 \
-    --tokenizer-revision 1bae0e1088993b9b82de08f59de5be5a34e42170 \
-    --public-dataset semianalysis_cc_traces_weka_062126_256k \
-    --ignore-trace-delays --agentic-cache-warmup-duration 120 \
-    --extra-inputs ignore_eos:true --random-seed 42 --cache-bust first_turn_prefix \
-    --concurrency $c --benchmark-duration 900 --benchmark-grace-period 300 \
-    --goodput "time_to_first_token:3000 inter_token_latency:20" \
-    --artifact-dir ~/runs/$RUN/traces/c$c
-done
+# From the repo root, with the .venv from "uv sync" active.
+
+# Print the AIPerf command for each point without running it.
+python scripts/sweep_traces.py r00-baseline --dry-run
+
+# Test one point first: concurrency 1 only.
+python scripts/sweep_traces.py r00-baseline --concurrency 1
+
+# Run 0: three passes of the sweep, to measure the noise between runs. On the
+# Mac, caffeinate -i keeps the laptop awake.
+caffeinate -i python scripts/sweep_traces.py r00-baseline --repeats 3
+
+# A later run: one pass.
+python scripts/sweep_traces.py r01-o6-prefix-cache-off
 ```
 
-Why each flag holds the workload fixed:
+The script:
+
+- **Checks the replica first.** It calls `/health` on the URL (default
+  `http://localhost:8000`, replica A) and stops if the replica or the tunnel is
+  down. For O8, point `--url` at the router.
+- **Resumes.** A point that already has its summary
+  (`profile_export_aiperf.json`) is skipped, so rerunning the same command
+  picks up an interrupted sweep. Failed points are retried.
+- **Stops cleanly.** Ctrl-C stops the whole sweep, not just the current point.
+- **Logs progress.** It appends one line per point (start, end, exit code) to
+  `~/runs/<run>/traces/progress.tsv`.
+
+What the scenario does (from AIPerf 0.13.0's `inferencex_agentx_mvp.py`):
+
+- **Agentic replay.** Each of the `c` sessions starts its trace at a random
+  point (0–100% of the way through), and its context is primed before
+  measuring. Each point therefore measures a steady state, not every session
+  starting cold at turn 0. Sub-agent fan-out (the Task tool) is replayed too.
+- **Recorded think times.** The gaps between an agent's turns (tool runs) are
+  kept, each capped at 10 s. The scenario forbids `--ignore-trace-delays`.
+  `c` is the number of concurrent agent sessions, not of requests in flight,
+  so read the real batch size from `vllm:num_requests_running` in the server
+  metrics. The decode probe gives clean batch sizes.
+- **Exact output lengths.** It adds `ignore_eos`, so each turn generates
+  exactly its recorded output length. Otherwise the model could stop early,
+  and a change that alters what the model writes, like fp8 → auto KV, would
+  also change how long decode takes.
+- **Locks the method.** It requires streaming, at least 900 s per point, and
+  the `first_turn_prefix` cache-bust marker (which it doesn't set for you).
+  It rejects conflicting flags unless `--unsafe-override` is passed, which
+  marks the run invalid. Don't use it for recorded runs.
+
+The other flags hold the rest of the workload fixed:
 
 | Flag | Without it |
 |---|---|
-| `--extra-inputs ignore_eos:true` | AIPerf sets `max_tokens` to each turn's recorded output length, but the model can stop earlier. A change that alters what the model writes, like fp8 → auto KV, would then also change how long decode takes |
-| `--random-seed 42` | Trace replay picks traces and their starting points at random on each run, so every run would send different requests |
-| `--cache-bust first_turn_prefix`, and one AIPerf run per concurrency | The prefix cache holds 26.75M tokens and keeps them between points. Without a marker, each point replays traces the previous point already cached, so later points look faster. The marker is built from an ID that AIPerf creates fresh for every run (`uuid4`). A single sweep command may share one ID across its points, which is why the loop runs one command per concurrency. The marker goes before the first user turn, so the shared system prompt can still hit the cache, as it would in real use |
+| `--random-seed 42` | The scenario picks a fresh random seed for each run, so the traces and their starting points would differ from run to run |
+| `--cache-bust first_turn_prefix`, and one AIPerf run per concurrency | The prefix cache holds 26.75M tokens and keeps them between points. Without a marker, each point would replay traces the previous point already cached, so later points would look faster. The marker is built from an ID that AIPerf creates fresh for every run (`uuid4`), so separate runs don't share cached conversations. It goes before the first user turn, so the shared system prompt can still hit the cache, as it would in real use |
 | `--tokenizer-revision` | AIPerf builds the prompts with the tokenizer. A change to the tokenizer on Hugging Face could change prompt lengths |
 
-`--ignore-trace-delays` keeps exactly `c` requests in flight, so each point is
-a clean batch size, which is what decode analysis needs. InferenceX's AgentX
-scenario (`--scenario inferencex-agentx-mvp`) keeps the recorded think times
-instead and forbids this flag. So these numbers aren't comparable with
-InferenceX's published AgentX results.
+Because the method matches InferenceX's, these results can be compared with
+InferenceX's published AgentX results for this model, with the hardware and
+configuration noted.
 
-This combination of flags hadn't run end to end as of 2026-11-06. Before the
-first full loop, run `c=1` alone and check its `logs/aiperf.log` for warnings.
+On 2026-11-06, a short test of this scenario got through the dataset download
+and about 2½ minutes of warm-up without errors before it was stopped. No full
+point has run yet. Before the first full sweep, run `--concurrency 1` alone and
+check its `logs/aiperf.log` for warnings.
 
-- **Run 0 only:** run the loop 3 times, into `traces/rep1`, `rep2` and `rep3`
-  (change the `--artifact-dir`), to measure the noise between runs. Later runs
-  run the loop once. If a later run differs from its reference by less than
-  twice the baseline's spread, repeat it before you believe it (Kiely §4.5.2,
-  p. 114).
-- **What each point writes** to `~/runs/$RUN/traces/c<c>/`:
+- **Run 0 only:** `--repeats 3` writes `traces/rep1`, `rep2` and `rep3`, to
+  measure the noise between runs. Later runs use one pass. If a later run
+  differs from its reference by less than twice the baseline's spread, repeat
+  it before you believe it (Kiely §4.5.2, p. 114).
+- **What each point writes** to `~/runs/<run>/traces/rep<r>/c<c>/`:
   - `profile_export_aiperf.csv` and `.json`: the summary (TTFT, ITL, request
     latency, throughput, goodput), written when the point finishes
   - `profile_export.jsonl`: one line per request
@@ -543,7 +579,7 @@ After each run, work through four steps. They pick the next knob.
 | ITL high even at concurrency 1–4 | Decode probe ITL at c=1 well above the analytical model | Decode: cost per step (bytes read, kernel launches, host reads) | O4, O1, O2, O3; CUDA graph coverage (O9) |
 | ITL p50 fine, p99 spikes | Spikes line up with large steps in `iteration_tokens_total` (AIPerf's `--slice-duration` shows them over time) | Prefill interrupting decode | O5 (smaller chunks), O8 |
 | ITL climbs steeply with concurrency | Decode probe ITL against batch size; `kv_cache_usage_perc` | Decode: batch growth (attention over long contexts, more experts read) | O1, O7, O9 |
-| Low throughput per GPU (async) | `num_requests_running` below the concurrency; preemptions | Decode: the batch is too small | O9, O1, GPU memory utilization |
+| Low throughput per GPU (async) | `num_requests_waiting` above 0 while `num_requests_running` stops growing; preemptions. In the traces, running below `c` alone is expected, because sessions spend time in think-time gaps | Decode: the batch is capped | O9, O1, GPU memory utilization |
 
 When two knobs fit the symptom equally, take the one listed first in its menu
 below.
