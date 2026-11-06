@@ -66,8 +66,8 @@ r00-baseline ─> 1 Predict ─> 2 Start ─> 3 Perf ─> 4 Quality ─> 5 Recor
    knob from that phase's menu. See [6. Gap analysis](#6-gap-analysis).
 
 **Naming.** Name each run `r<NN>-<knob>-<value>`, for example
-`r01-o6-prefix-cache-off`. Raw output goes under `~/runs/<run>/` on the node,
-except the trace sweep's, which goes under this repo's `runs/<run>/`.
+`r01-o6-prefix-cache-off`. Raw output goes under `~/runs/<run>/` on the node.
+Copy the trace sweep's into this repo's `runs/<run>/`, which git ignores.
 
 **Rules** (carried over from ADR 0001):
 
@@ -118,21 +118,26 @@ The two replicas share the host's CPUs and memory, and every decode step reads
 Engram rows from host memory. Load on B can therefore move A's numbers (O3
 tests this).
 
-Run from the node or from the Mac through the SSH tunnel, but use the same
-machine for every run. From the Mac, TTFT includes the round trip through the
-tunnel, and GPU telemetry isn't available.
+Run AIPerf on the node, inside tmux, for every run. From the Mac, every request
+goes through the SSH tunnel: TTFT includes the round trip, the tunnel can bunch
+tokens and skew ITL, and GPU telemetry isn't available. On 2026-11-06 a sweep
+from the Mac also got 77 `Server disconnected` errors in its first five points,
+while vLLM's own counters showed one aborted request. tmux keeps a sweep
+running when the SSH connection drops or the laptop sleeps, so the Mac doesn't
+have to stay awake.
 
 ```bash
 # On the Mac (one time): install the pinned AIPerf from pyproject.toml into the
-# repo's .venv, then activate it.
+# repo's .venv, for `aiperf analyze-trace` and --dry-run.
 uv sync && . .venv/bin/activate
 
-# On the node instead (one time): the venv module isn't installed by default.
+# On the node (one time; done on 2026-11-06): the venv module isn't installed
+# by default.
 sudo apt-get install -y python3.12-venv
 python3 -m venv ~/aiperf && . ~/aiperf/bin/activate && pip install aiperf==0.13.0
-# AIPerf needs its own Hugging Face cache on the node. ~/hf belongs to root,
-# because the vLLM container downloaded the model, so AIPerf can't write the
-# trace dataset there.
+# AIPerf uses its own Hugging Face cache on the node, so the trace dataset stays
+# out of the model's cache. ~/.bashrc sets HF_HOME=~/hf in every new shell and
+# tmux window, so export this again in each one.
 export HF_HOME=~/hf-aiperf
 
 # Name the run and create its folder. Every command below writes under it.
@@ -162,36 +167,87 @@ trajectories' caches, warms up for 2 more minutes, then measures for 15
 minutes. The grace period lets responses that started before the deadline
 finish and count. A full sweep takes about 2 hours.
 
+**1. Copy the script to the node.** The repo is private, so the node can't
+clone it. Copy the script again whenever it changes.
+
 ```bash
-# From the repo root, with the .venv from "uv sync" active.
+# On the Mac, from the repo root.
+scp scripts/sweep_traces.py b200-usc1:~/
+```
 
+**2. Start a tmux session on the node.**
+
+```bash
+ssh b200-usc1
+tmux new -s sweep    # tmux runs on the node; the Mac doesn't have it
+
+# Inside tmux. Check that HF_HOME prints /home/<you>/hf-aiperf.
+. ~/aiperf/bin/activate && export HF_HOME=~/hf-aiperf && echo $HF_HOME
+```
+
+**3. Run the sweep inside tmux.** Pass `--runs-dir ~/runs`, so the traces sit
+with the rest of the run's raw output. Without it, the script writes next to
+itself, to `/home/runs`, which it can't create.
+
+```bash
 # Print the AIPerf command for each point without running it.
-python scripts/sweep_traces.py r00-baseline --dry-run
+python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --dry-run
 
-# Test one point first: concurrency 1 only.
-python scripts/sweep_traces.py r00-baseline --concurrency 1
+# Test one point first: concurrency 1 only, about 20 minutes. Then run the
+# check in step 5.
+python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --concurrency 1
 
-# Run 0: three passes of the sweep, to measure the noise between runs. On the
-# Mac, caffeinate -i keeps the laptop awake.
-caffeinate -i python scripts/sweep_traces.py r00-baseline --repeats 3
+# Run 0: three passes of the sweep, to measure the noise between runs, about
+# 6 hours. The c1 point from the test is reused.
+python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
 
 # A later run: one pass.
-python scripts/sweep_traces.py r01-o6-prefix-cache-off
+python ~/sweep_traces.py r01-o6-prefix-cache-off --runs-dir ~/runs
+```
+
+**4. Detach and come back.** Ctrl-b, then d, detaches; the sweep keeps
+running on the node.
+
+```bash
+ssh b200-usc1
+tmux attach -t sweep                            # the live output
+cat ~/runs/r00-baseline/traces/progress.tsv     # one line per finished point
+```
+
+**5. Check every point.** AIPerf exits 0 and writes its summary even when it
+cancels a point, so the script counts a cancelled point as done and skips it on
+a rerun. This lists the points that had errors or were cancelled, and should
+print nothing:
+
+```bash
+grep -l -E "Error Summary|INCOMPLETE" ~/runs/r00-baseline/traces/rep*/c*/profile_export_console.txt
+```
+
+For each point it lists, read `logs/aiperf.log` in its folder, delete the
+folder, and rerun the same command.
+
+**6. Copy the results to the Mac** when the sweep has finished.
+
+```bash
+# On the Mac, from the repo root. Git ignores runs/.
+mkdir -p runs/r00-baseline && scp -r b200-usc1:runs/r00-baseline/traces runs/r00-baseline/
 ```
 
 The script:
 
 - **Checks the replica first.** It calls `/health` on the URL (default
-  `http://localhost:8000`, replica A) and stops if the replica or the tunnel is
-  down. For O8, point `--url` at the router.
+  `http://localhost:8000`, replica A) and stops if the replica is down. For
+  O8, point `--url` at the router.
 - **Resumes.** A point that already has its summary
   (`profile_export_aiperf.json`) is skipped, so rerunning the same command
-  picks up an interrupted sweep. Failed points are retried.
+  picks up an interrupted sweep. Points without a summary are retried, but a
+  cancelled point has one (step 5).
 - **Stops cleanly.** Ctrl-C stops the whole sweep, not just the current point.
 - **Logs progress.** It appends one line per point (start, end, exit code) to
-  `runs/<run>/traces/progress.tsv`.
-- **Writes into the repo.** Output goes under the repo's `runs/` folder, which
-  git ignores. `--runs-dir` puts it somewhere else.
+  `<runs-dir>/<run>/traces/progress.tsv`.
+- **Writes to `--runs-dir`.** The default is the `runs/` folder next to the
+  script's parent folder, which is the repo's `runs/` on the Mac. On the node,
+  pass `--runs-dir ~/runs`.
 
 What the scenario does (from AIPerf 0.13.0's `inferencex_agentx_mvp.py`):
 
@@ -225,16 +281,17 @@ Because the method matches InferenceX's, these results can be compared with
 InferenceX's published AgentX results for this model, with the hardware and
 configuration noted.
 
-On 2026-11-06, a short test of this scenario got through the dataset download
-and about 2½ minutes of warm-up without errors before it was stopped. No full
-point has run yet. Before the first full sweep, run `--concurrency 1` alone and
-check its `logs/aiperf.log` for warnings.
+On 2026-11-06, a short test of this scenario on the node got through the
+dataset download and about 2½ minutes of warm-up without errors before it was
+stopped. A sweep from the Mac later that day hit the tunnel errors described
+above: every point had errors, and AIPerf cancelled c4, c8 and c16 during
+warm-up. Those results were deleted, so no valid point has run yet.
 
 - **Run 0 only:** `--repeats 3` writes `traces/rep1`, `rep2` and `rep3`, to
   measure the noise between runs. Later runs use one pass. If a later run
   differs from its reference by less than twice the baseline's spread, repeat
   it before you believe it (Kiely §4.5.2, p. 114).
-- **What each point writes** to `runs/<run>/traces/rep<r>/c<c>/`:
+- **What each point writes** to `~/runs/<run>/traces/rep<r>/c<c>/` on the node:
   - `profile_export_aiperf.csv` and `.json`: the summary (TTFT, ITL, request
     latency, throughput, goodput), written when the point finishes
   - `profile_export.jsonl`: one line per request
@@ -470,14 +527,11 @@ understanding, or a bug.
 
 ## 5. Record
 
-Raw output isn't committed. The trace sweep's goes under this repo's
-`runs/<run>/`, which git ignores:
+Raw output stays on the node, under `~/runs/<run>/`:
 
-- `traces/`: the sweep's AIPerf artifacts
-
-The rest stays on the node, under `~/runs/<run>/`:
-
-- `probe-prefill/`, `probe-decode/`: AIPerf's artifacts
+- `traces/`, `probe-prefill/`, `probe-decode/`: AIPerf's artifacts. Copy
+  `traces/` into this repo's `runs/<run>/` too (3. Perf run, step 6). Git
+  ignores `runs/`, so raw output isn't committed
 - `server.log`: the replica's log
 - `a2/`: the SWE-bench output
 

@@ -7,24 +7,26 @@ in one command. The workload flags below are fixed: every run in the PoC uses
 the same ones, so a difference in the results comes from the server. Only the
 run name, the concurrencies, the repeats and the URL can change.
 
-Examples (from the repo root, with the .venv from `uv sync`):
+Run it on the node, inside tmux, with AIPerf's venv active (docs/poc.md has the
+steps). From the Mac, the SSH tunnel dropped connections and skewed latency.
 
     # Print the AIPerf commands without running them.
-    python scripts/sweep_traces.py r00-baseline --dry-run
+    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --dry-run
 
     # Test one point first.
-    python scripts/sweep_traces.py r00-baseline --concurrency 1
+    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --concurrency 1
 
-    # Run 0: three repeats of the full sweep. On the Mac, keep it awake.
-    caffeinate -i python scripts/sweep_traces.py r00-baseline --repeats 3
+    # Run 0: three repeats of the full sweep.
+    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
 
     # A later run: one repeat.
-    python scripts/sweep_traces.py r01-o6-prefix-cache-off
+    python ~/sweep_traces.py r01-o6-prefix-cache-off --runs-dir ~/runs
 
 Each point writes its AIPerf artifacts to
 <runs-dir>/<run>/traces/rep<r>/c<c>/, and the sweep appends one line per point
-to <runs-dir>/<run>/traces/progress.tsv. <runs-dir> is the repo's runs/ folder
-unless --runs-dir says otherwise. A point that already has its summary
+to <runs-dir>/<run>/traces/progress.tsv. By default <runs-dir> is the runs/
+folder next to the script's parent folder: the repo's runs/ on the Mac, but
+/home/runs (not writable) for ~/sweep_traces.py on the node. A point that already has its summary
 (profile_export_aiperf.json) is skipped, so rerunning the same command resumes
 an interrupted sweep. Ctrl-C stops the whole sweep.
 """
