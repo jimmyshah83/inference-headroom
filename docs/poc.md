@@ -234,31 +234,39 @@ again.
 python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
 ```
 
-**7. Detach, then come back later.** Press Ctrl-b, then d. The sweep keeps
-running on the node, so you can close the laptop. If Ctrl-b does nothing, your
-terminal is catching it: close the terminal tab, or detach from another Mac
-terminal:
+**7. tmux: detach, so the sweep keeps running without you.** Press Ctrl-b,
+let go, then press d. tmux prints `[detached (from session sweep)]` and you're
+back at the node's normal prompt. Now `exit` closes only the SSH connection,
+and you can close the laptop.
+
+If Ctrl-b does nothing, your terminal is catching it. Close the terminal tab
+(tmux keeps running), or detach from another Mac terminal:
 
 ```bash
 ssh b200-usc1 tmux detach-client -s sweep
 ```
 
-To look in on it later:
+**8. Mac: attach, to check on the sweep.**
 
 ```bash
 ssh b200-usc1
+tmux ls                                         # should list "sweep"
 cat ~/runs/r00-baseline/traces/progress.tsv     # one line per finished point
 tmux attach -t sweep                            # the live output
 ```
 
-**8. tmux: check every point when the sweep ends.** Run the step 5 command
+If `tmux ls` says `no server running`, the session is gone: check
+`progress.tsv`, then start again from step 2. The sweep resumes where it
+stopped. When you're done looking, detach again as in step 7.
+
+**9. tmux: check every point when the sweep ends.** Run the step 5 command
 again. It must print nothing. AIPerf exits 0 and writes a summary even when it
 cancels a point, so the script counts that point as done and skips it on a
 rerun. For each point listed, read its `logs/aiperf.log`, delete its folder
 (for example `rm -r ~/runs/r00-baseline/traces/rep2/c8`), and rerun the
 step 6 command. It measures only the missing points.
 
-**9. Mac, repo root: copy the results into the repo.** Git ignores `runs/`.
+**10. Mac, repo root: copy the results into the repo.** Git ignores `runs/`.
 
 ```bash
 mkdir -p runs/r00-baseline && scp -r b200-usc1:runs/r00-baseline/traces runs/r00-baseline/
@@ -275,7 +283,7 @@ The script:
 - **Resumes.** A point that already has its summary
   (`profile_export_aiperf.json`) is skipped, so rerunning the same command
   picks up an interrupted sweep. Points without a summary are retried, but a
-  cancelled point has one (step 8).
+  cancelled point has one (step 9).
 - **Stops cleanly.** Ctrl-C stops the whole sweep, not just the current point.
 - **Logs progress.** It appends one line per point (start, end, exit code) to
   `<runs-dir>/<run>/traces/progress.tsv`.
@@ -564,7 +572,7 @@ understanding, or a bug.
 Raw output stays on the node, under `~/runs/<run>/`:
 
 - `traces/`, `probe-prefill/`, `probe-decode/`: AIPerf's artifacts. Copy
-  `traces/` into this repo's `runs/<run>/` too (3. Perf run, step 9). Git
+  `traces/` into this repo's `runs/<run>/` too (3. Perf run, step 10). Git
   ignores `runs/`, so raw output isn't committed
 - `server.log`: the replica's log
 - `a2/`: the SWE-bench output
