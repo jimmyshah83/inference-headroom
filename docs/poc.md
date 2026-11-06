@@ -167,71 +167,85 @@ trajectories' caches, warms up for 2 more minutes, then measures for 15
 minutes. The grace period lets responses that started before the deadline
 finish and count. A full sweep takes about 2 hours.
 
-**1. Copy the script to the node.** The repo is private, so the node can't
-clone it. Copy the script again whenever it changes.
+#### Run the sweep: step by step
+
+Run 0 (`r00-baseline`) below. For a later run, use its run name and leave out
+`--repeats 3`. Each step says where it runs.
+
+**1. Mac, repo root: copy the script to the node.** The repo is private, so
+the node can't clone it. Copy it again whenever the script changes.
 
 ```bash
-# On the Mac, from the repo root.
 scp scripts/sweep_traces.py b200-usc1:~/
 ```
 
-**2. Start a tmux session on the node.**
+**2. Mac: log in to the node and start tmux.** The prompt must show the
+node's hostname (`computeinstance-…`) before you start tmux. The Mac doesn't
+have tmux.
 
 ```bash
 ssh b200-usc1
-tmux new -s sweep    # tmux runs on the node; the Mac doesn't have it
-
-# Inside tmux. Check that HF_HOME prints /home/<you>/hf-aiperf.
-. ~/aiperf/bin/activate && export HF_HOME=~/hf-aiperf && echo $HF_HOME
+tmux new -s sweep
 ```
 
-**3. Run the sweep inside tmux.** Pass `--runs-dir ~/runs`, so the traces sit
-with the rest of the run's raw output. Without it, the script writes next to
-itself, to `/home/runs`, which it can't create.
+**3. tmux: set up the shell.** `~/.bashrc` sets `HF_HOME=~/hf` in every new
+shell, so set it again here. The last command must print
+`/home/jimmyshah-sshkey/hf-aiperf`.
 
 ```bash
-# Print the AIPerf command for each point without running it.
-python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --dry-run
+. ~/aiperf/bin/activate
+export HF_HOME=~/hf-aiperf
+echo $HF_HOME
+```
 
-# Test one point first: concurrency 1 only, about 20 minutes. Then run the
-# check in step 5.
+**4. tmux: test one point (about 20 minutes).** Always pass
+`--runs-dir ~/runs`, so the traces sit with the run's other raw output.
+Without it, the script tries to write to `/home/runs`, which it can't create.
+
+```bash
 python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --concurrency 1
-
-# Run 0: three passes of the sweep, to measure the noise between runs, about
-# 6 hours. The c1 point from the test is reused.
-python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
-
-# A later run: one pass.
-python ~/sweep_traces.py r01-o6-prefix-cache-off --runs-dir ~/runs
 ```
 
-**4. Detach and come back.** Ctrl-b, then d, detaches; the sweep keeps
-running on the node.
-
-```bash
-ssh b200-usc1
-tmux attach -t sweep                            # the live output
-cat ~/runs/r00-baseline/traces/progress.tsv     # one line per finished point
-```
-
-**5. Check every point.** AIPerf exits 0 and writes its summary even when it
-cancels a point, so the script counts a cancelled point as done and skips it on
-a rerun. This lists the points that had errors or were cancelled, and should
-print nothing:
+**5. tmux: check the test point.** This lists points that had errors or that
+AIPerf cancelled. It must print nothing. If it lists the point, read its
+`logs/aiperf.log` and fix the cause before going on.
 
 ```bash
 grep -l -E "Error Summary|INCOMPLETE" ~/runs/r00-baseline/traces/rep*/c*/profile_export_console.txt
 ```
 
-For each point it lists, read `logs/aiperf.log` in its folder, delete the
-folder, and rerun the same command.
-
-**6. Copy the results to the Mac** when the sweep has finished.
+**6. tmux: run the full sweep (about 6 hours).** Three passes, to measure the
+noise between runs. The c1 point from step 4 is reused, so it isn't measured
+again.
 
 ```bash
-# On the Mac, from the repo root. Git ignores runs/.
+python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
+```
+
+**7. Detach, then come back later.** Press Ctrl-b, then d. The sweep keeps
+running on the node, so you can close the laptop. To look in on it:
+
+```bash
+ssh b200-usc1
+cat ~/runs/r00-baseline/traces/progress.tsv     # one line per finished point
+tmux attach -t sweep                            # the live output
+```
+
+**8. tmux: check every point when the sweep ends.** Run the step 5 command
+again. It must print nothing. AIPerf exits 0 and writes a summary even when it
+cancels a point, so the script counts that point as done and skips it on a
+rerun. For each point listed, read its `logs/aiperf.log`, delete its folder
+(for example `rm -r ~/runs/r00-baseline/traces/rep2/c8`), and rerun the
+step 6 command. It measures only the missing points.
+
+**9. Mac, repo root: copy the results into the repo.** Git ignores `runs/`.
+
+```bash
 mkdir -p runs/r00-baseline && scp -r b200-usc1:runs/r00-baseline/traces runs/r00-baseline/
 ```
+
+To print each point's AIPerf command without running anything, add
+`--dry-run` to the step 6 command.
 
 The script:
 
@@ -241,7 +255,7 @@ The script:
 - **Resumes.** A point that already has its summary
   (`profile_export_aiperf.json`) is skipped, so rerunning the same command
   picks up an interrupted sweep. Points without a summary are retried, but a
-  cancelled point has one (step 5).
+  cancelled point has one (step 8).
 - **Stops cleanly.** Ctrl-C stops the whole sweep, not just the current point.
 - **Logs progress.** It appends one line per point (start, end, exit code) to
   `<runs-dir>/<run>/traces/progress.tsv`.
@@ -530,7 +544,7 @@ understanding, or a bug.
 Raw output stays on the node, under `~/runs/<run>/`:
 
 - `traces/`, `probe-prefill/`, `probe-decode/`: AIPerf's artifacts. Copy
-  `traces/` into this repo's `runs/<run>/` too (3. Perf run, step 6). Git
+  `traces/` into this repo's `runs/<run>/` too (3. Perf run, step 9). Git
   ignores `runs/`, so raw output isn't committed
 - `server.log`: the replica's log
 - `a2/`: the SWE-bench output
