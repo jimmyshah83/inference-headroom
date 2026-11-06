@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PoC raw output (the trace sweep writes here; only summaries are committed)
+/runs/

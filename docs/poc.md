@@ -66,7 +66,8 @@ r00-baseline ─> 1 Predict ─> 2 Start ─> 3 Perf ─> 4 Quality ─> 5 Recor
    knob from that phase's menu. See [6. Gap analysis](#6-gap-analysis).
 
 **Naming.** Name each run `r<NN>-<knob>-<value>`, for example
-`r01-o6-prefix-cache-off`. Raw output goes under `~/runs/<run>/` on the node.
+`r01-o6-prefix-cache-off`. Raw output goes under `~/runs/<run>/` on the node,
+except the trace sweep's, which goes under this repo's `runs/<run>/`.
 
 **Rules** (carried over from ADR 0001):
 
@@ -188,7 +189,9 @@ The script:
   picks up an interrupted sweep. Failed points are retried.
 - **Stops cleanly.** Ctrl-C stops the whole sweep, not just the current point.
 - **Logs progress.** It appends one line per point (start, end, exit code) to
-  `~/runs/<run>/traces/progress.tsv`.
+  `runs/<run>/traces/progress.tsv`.
+- **Writes into the repo.** Output goes under the repo's `runs/` folder, which
+  git ignores. `--runs-dir` puts it somewhere else.
 
 What the scenario does (from AIPerf 0.13.0's `inferencex_agentx_mvp.py`):
 
@@ -231,7 +234,7 @@ check its `logs/aiperf.log` for warnings.
   measure the noise between runs. Later runs use one pass. If a later run
   differs from its reference by less than twice the baseline's spread, repeat
   it before you believe it (Kiely §4.5.2, p. 114).
-- **What each point writes** to `~/runs/<run>/traces/rep<r>/c<c>/`:
+- **What each point writes** to `runs/<run>/traces/rep<r>/c<c>/`:
   - `profile_export_aiperf.csv` and `.json`: the summary (TTFT, ITL, request
     latency, throughput, goodput), written when the point finishes
   - `profile_export.jsonl`: one line per request
@@ -467,9 +470,14 @@ understanding, or a bug.
 
 ## 5. Record
 
-Raw output stays on the node, under `~/runs/<run>/`:
+Raw output isn't committed. The trace sweep's goes under this repo's
+`runs/<run>/`, which git ignores:
 
-- `traces/`, `probe-prefill/`, `probe-decode/`: AIPerf's artifacts
+- `traces/`: the sweep's AIPerf artifacts
+
+The rest stays on the node, under `~/runs/<run>/`:
+
+- `probe-prefill/`, `probe-decode/`: AIPerf's artifacts
 - `server.log`: the replica's log
 - `a2/`: the SWE-bench output
 

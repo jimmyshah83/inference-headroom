@@ -23,7 +23,8 @@ Examples (from the repo root, with the .venv from `uv sync`):
 
 Each point writes its AIPerf artifacts to
 <runs-dir>/<run>/traces/rep<r>/c<c>/, and the sweep appends one line per point
-to <runs-dir>/<run>/traces/progress.tsv. A point that already has its summary
+to <runs-dir>/<run>/traces/progress.tsv. <runs-dir> is the repo's runs/ folder
+unless --runs-dir says otherwise. A point that already has its summary
 (profile_export_aiperf.json) is skipped, so rerunning the same command resumes
 an interrupted sweep. Ctrl-C stops the whole sweep.
 """
@@ -55,6 +56,7 @@ GOODPUT = "time_to_first_token:3000 inter_token_latency:20"
 
 DEFAULT_CONCURRENCIES = [1, 2, 4, 8, 16, 32]  # InferenceX's task concurrencies.
 SUMMARY_FILE = "profile_export_aiperf.json"
+RUNS_DIR = Path(__file__).resolve().parent.parent / "runs"  # The repo's runs/ folder.
 
 
 def aiperf_binary() -> str:
@@ -122,7 +124,7 @@ def parse_args() -> argparse.Namespace:
         help="replica to measure: replica A, or the router in O8 (default: %(default)s)",
     )
     parser.add_argument(
-        "--runs-dir", type=Path, default=Path.home() / "runs",
+        "--runs-dir", type=Path, default=RUNS_DIR,
         help="where run folders go (default: %(default)s)",
     )
     parser.add_argument("--dry-run", action="store_true", help="print the commands and exit")
