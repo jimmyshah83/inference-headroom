@@ -226,11 +226,14 @@ AIPerf cancelled. It must print nothing. If it lists the point, read its
 grep -l -E "Error Summary|INCOMPLETE" ~/runs/r00-baseline/traces/rep*/c*/profile_export_console.txt
 ```
 
-**6. tmux: run the full sweep (about 6 hours).** Three passes, to measure the
-noise between runs. The c1 point from step 4 is reused, so it isn't measured
-again.
+**6. tmux: run the full sweep (about 6 hours).** Without `--concurrency`, the
+script runs all six concurrencies, 1, 2, 4, 8, 16 and 32, one after another.
+`--repeats 3` does that three times, to measure the noise between runs: 18
+points, `rep1/c1` to `rep3/c32`. The c1 point from step 4 is `rep1/c1`, so it
+isn't measured again.
 
 ```bash
+# The sweep: c = 1, 2, 4, 8, 16, 32, three times.
 python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
 ```
 
