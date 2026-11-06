@@ -172,6 +172,18 @@ finish and count. A full sweep takes about 2 hours.
 Run 0 (`r00-baseline`) below. For a later run, use its run name and leave out
 `--repeats 3`. Each step says where it runs.
 
+The sweep runs inside tmux on the node, so it keeps going when the SSH
+connection drops or the laptop closes. The tmux commands it needs:
+
+| To | Run |
+|---|---|
+| Start the session (on the node, not the Mac) | `tmux new -s sweep` |
+| Leave it running (detach) | Ctrl-b, then d. If your terminal catches Ctrl-b, close the terminal tab instead, or run `ssh b200-usc1 tmux detach-client -s sweep` from another Mac terminal |
+| Come back to it | `ssh b200-usc1`, then `tmux attach -t sweep` |
+| List the sessions | `tmux ls`. `(attached)` means a terminal is showing it |
+| Stop the sweep | Ctrl-c inside tmux. Rerunning the same command resumes it |
+| Close the session | `exit` at the tmux prompt, once the sweep has finished |
+
 **1. Mac, repo root: copy the script to the node.** The repo is private, so
 the node can't clone it. Copy it again whenever the script changes.
 
@@ -223,7 +235,15 @@ python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
 ```
 
 **7. Detach, then come back later.** Press Ctrl-b, then d. The sweep keeps
-running on the node, so you can close the laptop. To look in on it:
+running on the node, so you can close the laptop. If Ctrl-b does nothing, your
+terminal is catching it: close the terminal tab, or detach from another Mac
+terminal:
+
+```bash
+ssh b200-usc1 tmux detach-client -s sweep
+```
+
+To look in on it later:
 
 ```bash
 ssh b200-usc1
