@@ -1,0 +1,15 @@
+[project]
+name = "inference-headroom"
+version = "0.1.0"
+description = "Benchmark tooling for the DeepSeek-V4.1-Flash prefill and decode PoC on 8xB200"
+readme = "README.md"
+# AIPerf 0.13.0 supports Python 3.11 to 3.13.
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    # Load generator for the perf runs (docs/poc.md, step 3).
+    "aiperf==0.13.0",
+]
+
+[tool.uv]
+# Not a package: this only defines the environment for running benchmarks.
+package = false

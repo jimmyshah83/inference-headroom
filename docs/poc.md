@@ -188,7 +188,7 @@ for its DeepSeek-V4.1-Flash agentic sweep. The concurrencies are InferenceX's:
 aiperf profile --model deepseek-ai/DeepSeek-V4.1-Flash-1017 \
   --url http://localhost:8000 --endpoint-type chat --streaming \
   --tokenizer deepseek-ai/DeepSeek-V4.1-Flash-1017 \
-  --public-dataset semianalysis-cc-traces-weka-062126-256-k \
+  --public-dataset semianalysis_cc_traces_weka_062126_256k \
   --ignore-trace-delays --agentic-cache-warmup-duration 120 \
   --concurrency 1,2,4,8,16,32 \
   --benchmark-duration 900 --benchmark-grace-period 300 \
@@ -305,9 +305,10 @@ aiperf profile --model deepseek-ai/DeepSeek-V4.1-Flash-1017 \
 **B4. Speculative decoding acceptance.** Run this on DSpark runs (O4).
 
 - **Dataset:** AIPerf 0.13 reads SPEED-Bench's coding split as a custom dataset
-  (`--custom-dataset-type speed-bench-coding --input-file …`), so download that
-  file first. `--public-dataset spec-al-humaneval` and `spec-al-mbpp` are
-  coding sets that AIPerf downloads itself.
+  (`--custom-dataset-type speed_bench_coding --input-file …`), so download that
+  file first. `--public-dataset spec_al_humaneval` and `spec_al_mbpp` are
+  coding sets that AIPerf downloads itself. `--help` lists dataset names with
+  hyphens, but the parser accepts only the underscore spelling.
 - **Acceptance:** read it from the server.
 
 ```bash
