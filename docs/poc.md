@@ -83,7 +83,7 @@ r00-baseline ─> 1 Predict ─> 2 Start ─> 3 Perf ─> 4 Quality ─> 5 Recor
 | Step | Time |
 |---|---|
 | Start | ~42 min |
-| Perf: trace sweep | ~1 h 45 min |
+| Perf: trace sweep | ~2 h |
 | Perf: phase probes | ~20 min |
 | Quality: A1 | ~5 min |
 | Quality: A2 | Measure it on the baseline. Estimate: 1.5–3 h |
@@ -157,22 +157,35 @@ Run 0 does more than the later runs:
 
 ## 3. Perf run
 
-Run benchmarks from the node, so network latency stays out of the numbers. Run
-them against replica A (port 8000), and keep replica B idle. The two replicas
-share the host's CPUs and memory, and every decode step reads Engram rows from
-host memory. Load on B can therefore move A's numbers (O3 tests this).
+Run every benchmark against replica A (port 8000), and keep replica B idle.
+The two replicas share the host's CPUs and memory, and every decode step reads
+Engram rows from host memory. Load on B can therefore move A's numbers (O3
+tests this).
+
+Run from the node or from the Mac through the SSH tunnel, but use the same
+machine for every run. From the Mac, TTFT includes the round trip through the
+tunnel, and GPU telemetry isn't available.
 
 ```bash
-# Install AIPerf 0.13.0 in its own virtual environment on the node (one time).
+# On the Mac (one time): install the pinned AIPerf from pyproject.toml into the
+# repo's .venv, then activate it.
+uv sync && . .venv/bin/activate
+
+# On the node instead (one time): the venv module isn't installed by default.
+sudo apt-get install -y python3.12-venv
 python3 -m venv ~/aiperf && . ~/aiperf/bin/activate && pip install aiperf==0.13.0
+# AIPerf needs its own Hugging Face cache on the node. ~/hf belongs to root,
+# because the vLLM container downloaded the model, so AIPerf can't write the
+# trace dataset there.
+export HF_HOME=~/hf-aiperf
 
 # Name the run and create its folder. Every command below writes under it.
 RUN=r00-baseline && mkdir -p ~/runs/$RUN
 ```
 
 The commands below were checked against `aiperf profile --help` for 0.13.0.
-After the first run, check how a concurrency sweep lays out its artifact
-folders before you script the summary.
+`--help` lists dataset names with hyphens, but the parser accepts only the
+underscore spelling.
 
 ### Coding-agent traces (the workload)
 
@@ -180,30 +193,61 @@ These are SemiAnalysis's Claude Code traces, the same dataset InferenceX used
 for its DeepSeek-V4.1-Flash agentic sweep. The concurrencies are InferenceX's:
 1, 2, 4, 8, 16 and 32.
 
+**Every run uses exactly this command.** Only `RUN` and the server change
+between runs, so a difference in the results comes from the server. If the
+command has to change, run the baseline again with the new command.
+
 ```bash
-# Replay the 256k-capped trace set at each concurrency, without the recorded
-# think-time gaps, after a 2-minute agentic cache warm-up. Each point runs
-# 15 minutes. The grace period lets long responses that started before the
-# deadline finish and count.
-aiperf profile --model deepseek-ai/DeepSeek-V4.1-Flash-1017 \
-  --url http://localhost:8000 --endpoint-type chat --streaming \
-  --tokenizer deepseek-ai/DeepSeek-V4.1-Flash-1017 \
-  --public-dataset semianalysis_cc_traces_weka_062126_256k \
-  --ignore-trace-delays --agentic-cache-warmup-duration 120 \
-  --concurrency 1,2,4,8,16,32 \
-  --benchmark-duration 900 --benchmark-grace-period 300 \
-  --goodput "time_to_first_token:3000 inter_token_latency:20" \
-  --artifact-dir ~/runs/$RUN/traces
+# Replay the 256k-capped trace set, one AIPerf run per concurrency, without the
+# recorded think-time gaps, after a 2-minute agentic cache warm-up. Each point
+# runs 15 minutes, and the grace period lets responses that started before the
+# deadline finish and count. The whole loop takes about 2 hours. On the Mac,
+# run it under "caffeinate -i" so the laptop doesn't sleep.
+for c in 1 2 4 8 16 32; do
+  aiperf profile --model deepseek-ai/DeepSeek-V4.1-Flash-1017 \
+    --url http://localhost:8000 --endpoint-type chat --streaming \
+    --tokenizer deepseek-ai/DeepSeek-V4.1-Flash-1017 \
+    --tokenizer-revision 1bae0e1088993b9b82de08f59de5be5a34e42170 \
+    --public-dataset semianalysis_cc_traces_weka_062126_256k \
+    --ignore-trace-delays --agentic-cache-warmup-duration 120 \
+    --extra-inputs ignore_eos:true --random-seed 42 --cache-bust first_turn_prefix \
+    --concurrency $c --benchmark-duration 900 --benchmark-grace-period 300 \
+    --goodput "time_to_first_token:3000 inter_token_latency:20" \
+    --artifact-dir ~/runs/$RUN/traces/c$c
+done
 ```
 
-- **Run 0 only:** add `--num-profile-runs 3`. AIPerf repeats the run and
-  reports the mean, the spread and a confidence interval. Later runs run once.
-  If a later run differs from its reference by less than twice the baseline's
-  spread, repeat it before you believe it (Kiely §4.5.2, p. 114).
-- **Server metrics:** AIPerf scrapes the replica's `/metrics` during the run
-  (on by default) and writes `server_metrics_export.csv` and `.json` next to
-  its own results. That file is where the split between prefill and decode
-  comes from (see below).
+Why each flag holds the workload fixed:
+
+| Flag | Without it |
+|---|---|
+| `--extra-inputs ignore_eos:true` | AIPerf sets `max_tokens` to each turn's recorded output length, but the model can stop earlier. A change that alters what the model writes, like fp8 → auto KV, would then also change how long decode takes |
+| `--random-seed 42` | Trace replay picks traces and their starting points at random on each run, so every run would send different requests |
+| `--cache-bust first_turn_prefix`, and one AIPerf run per concurrency | The prefix cache holds 26.75M tokens and keeps them between points. Without a marker, each point replays traces the previous point already cached, so later points look faster. The marker is built from an ID that AIPerf creates fresh for every run (`uuid4`). A single sweep command may share one ID across its points, which is why the loop runs one command per concurrency. The marker goes before the first user turn, so the shared system prompt can still hit the cache, as it would in real use |
+| `--tokenizer-revision` | AIPerf builds the prompts with the tokenizer. A change to the tokenizer on Hugging Face could change prompt lengths |
+
+`--ignore-trace-delays` keeps exactly `c` requests in flight, so each point is
+a clean batch size, which is what decode analysis needs. InferenceX's AgentX
+scenario (`--scenario inferencex-agentx-mvp`) keeps the recorded think times
+instead and forbids this flag. So these numbers aren't comparable with
+InferenceX's published AgentX results.
+
+This combination of flags hadn't run end to end as of 2026-11-06. Before the
+first full loop, run `c=1` alone and check its `logs/aiperf.log` for warnings.
+
+- **Run 0 only:** run the loop 3 times, into `traces/rep1`, `rep2` and `rep3`
+  (change the `--artifact-dir`), to measure the noise between runs. Later runs
+  run the loop once. If a later run differs from its reference by less than
+  twice the baseline's spread, repeat it before you believe it (Kiely §4.5.2,
+  p. 114).
+- **What each point writes** to `~/runs/$RUN/traces/c<c>/`:
+  - `profile_export_aiperf.csv` and `.json`: the summary (TTFT, ITL, request
+    latency, throughput, goodput), written when the point finishes
+  - `profile_export.jsonl`: one line per request
+  - `server_metrics_export.csv` and `.json`: the replica's `/metrics`, scraped
+    during the run (on by default). This is where the split between prefill
+    and decode comes from (see below)
+  - `logs/aiperf.log`: check it first when a point fails
 - **If AIPerf refuses a concurrency** because the trace pool is too small, the
   error says so. `--allow-dataset-wrap` reuses traces, but reused traces also
   hit the prefix cache, so record it if you use it.
