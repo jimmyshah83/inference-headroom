@@ -656,8 +656,8 @@ Record these from each replica's startup log:
   - `cudagraph_capture_sizes`: 1, 2, 4, 8, then every 8 up to 256 and every 16
     up to 1,024 (`max_cudagraph_capture_size` 1,024). That covers every decode
     step up to the 128 requests the baseline sweeps reach.
-  - `max_num_seqs`: not in the log. B1 checks that it isn't the limit at
-    concurrency 128 ([PoC plan](poc.md#performance-benchmarks)).
+  - `max_num_seqs`: not in the log. The decode probe checks that it isn't the
+    limit at concurrency 128 ([PoC plan](poc.md#phase-probes)).
   - Compile mode: `NONE`, so torch.compile is off. Turning on breakable CUDA
     graphs for this model sets it to `NONE` ([CUDA graphs](#cuda-graphs)).
     Passing `--compilation-config '{"mode":"VLLM_COMPILE"}'` doesn't change
@@ -786,6 +786,7 @@ nebius vpc network delete --id $NETWORK_ID
 
 ## Next
 
-- Run the baseline and the quality smoke tests: Week 1 of the [PoC plan](poc.md).
+- Put the baseline through the loop as run 0: see "The loop" in the
+  [PoC plan](poc.md#the-loop).
 - Start the analytical model: see "Analytical model and profiles" in the
   [PoC plan](poc.md#analytical-model-and-profiles).
