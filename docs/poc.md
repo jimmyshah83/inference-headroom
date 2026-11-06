@@ -108,52 +108,7 @@ traffic looks like this:
 
 Before run 0, run `aiperf analyze-trace` on the trace dataset and record its
 input-length distribution and prefix-reuse rate. It needs no server, so run it
-on the Mac. Those numbers tell you which phase can matter.
-
-## Targets
-
-There is no customer SLA, so these are starting points and judgment calls.
-Write down your reasoning if you change them.
-
-| Profile | Who is waiting | Latency targets | What you maximize |
-|---|---|---|---|
-| **Interactive** | A developer watching the agent work | p90 TTFT ≤ 3 s on turns that hit the prefix cache; p90 ITL ≤ 20 ms (≥ 50 tok/s per user) | Concurrency per replica that still meets both targets (goodput) |
-| **Async** | Nobody: background agents, batch refactors | p90 TTFT ≤ 30 s; zero failed requests | Output tokens/s per GPU, and cost per completed SWE task |
-
-AIPerf computes goodput (requests meeting every target) with
-`--goodput "time_to_first_token:3000 inter_token_latency:20"`. Units are ms.
-
-The TTFT target tests prefill, and the ITL target tests decode. Goodput counts
-a request only when both pass, so the gap analysis has to find out which one
-failed.
-
-For the cost figures, use the public on-demand B200 price, $8.50 per GPU-hour
-([nebius.com/prices](https://nebius.com/prices), 2026-11-03). Keep any deal
-pricing out of this repo.
-
-## The baseline (run 0)
-
-The baseline is defined in
-[getting-started step 10](getting-started.md#10-start-the-two-replicas). It
-runs 2 replicas, each TP4, with the vLLM recipe's B200 settings:
-
-- fp8 KV cache
-- FlashInfer sparse-MLA attention with an MXFP4 indexer
-- Engram offload with transparent huge pages
-- FlashInfer autotuning
-
-Prefix caching is on, speculative decoding is off, and everything else uses
-vLLM's defaults. The recipe's own B200 default is TP2, tuned for concurrency
-~1. That configuration is the TP2 point in O1
-([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md),
-decision 3).
-
-Run 0 does more than the later runs:
-
-- The perf run repeats 3 times, to measure run-to-run noise.
-- The analytical model's predictions are written before it starts.
-- Its A2 result is the reference that the final configuration's A2 is compared
-  against.
+on the Mac. Those numbers tell you which phase can matter.ß
 
 ## 3. Perf run
 
