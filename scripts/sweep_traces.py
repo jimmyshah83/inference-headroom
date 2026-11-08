@@ -5,7 +5,12 @@ Replays SemiAnalysis's Claude Code traces under InferenceX's AgentX scenario.
 Each concurrency gets its own AIPerf run, because the scenario refuses a sweep
 in one command. The workload flags below are fixed: every run in the PoC uses
 the same ones, so a difference in the results comes from the server. Only the
-run name, the concurrencies, the repeats and the URL can change.
+model, the run name, the concurrencies, the repeats and the URL can change.
+
+--model picks one of MODELS and must match the model the server serves. Runs
+of different models aren't comparable, so give each model its own run names.
+The default is DeepSeek-V4-Flash-0731 on 1×B300; run 0 (r00-baseline) used
+DeepSeek-V4.1-Flash-1017 on 8×B200.
 
 Run it on the node, inside tmux, with AIPerf's venv active (docs/poc.md has the
 steps). From the Mac, the SSH tunnel dropped connections and skewed latency.
@@ -21,6 +26,9 @@ steps). From the Mac, the SSH tunnel dropped connections and skewed latency.
 
     # A later run: one repeat.
     python ~/sweep_traces.py r01-o6-prefix-cache-off --runs-dir ~/runs
+
+    # The 8×B200 model instead of the default.
+    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --model deepseek-ai/DeepSeek-V4.1-Flash-1017
 
 Each point writes its AIPerf artifacts to
 <runs-dir>/<run>/traces/rep<r>/c<c>/, and the sweep appends one line per point
@@ -44,9 +52,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# The models the sweep can measure, each with the Hugging Face commit its
+# tokenizer is pinned to.
+MODELS = {
+    # 1×B300. 166.9 GB checkpoint; FP8 with 128×128 blocks; 1M context.
+    "deepseek-ai/DeepSeek-V4-Flash-0731": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    # 8×B200. Run 0 (r00-baseline) used this one.
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+}
+DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
+
 # The fixed workload. Changing any of these means re-running the baseline.
-MODEL = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-MODEL_REVISION = "1bae0e1088993b9b82de08f59de5be5a34e42170"
 DATASET = "semianalysis_cc_traces_weka_062126_256k"
 SCENARIO = "inferencex-agentx-mvp"
 CACHE_BUST = "first_turn_prefix"
@@ -72,13 +88,15 @@ def aiperf_binary() -> str:
     sys.exit("aiperf not found. Run `uv sync` and activate .venv, then try again.")
 
 
-def aiperf_command(aiperf: str, url: str, concurrency: int, artifact_dir: Path) -> list[str]:
+def aiperf_command(
+    aiperf: str, model: str, url: str, concurrency: int, artifact_dir: Path
+) -> list[str]:
     """Build the AIPerf command for one point of the sweep."""
     return [
         aiperf, "profile",
-        "--model", MODEL,
+        "--model", model,
         "--url", url, "--endpoint-type", "chat", "--streaming",
-        "--tokenizer", MODEL, "--tokenizer-revision", MODEL_REVISION,
+        "--tokenizer", model, "--tokenizer-revision", MODELS[model],
         "--scenario", SCENARIO, "--cache-bust", CACHE_BUST,
         "--public-dataset", DATASET,
         "--agentic-cache-warmup-duration", str(AGENTIC_WARMUP_S),
@@ -114,6 +132,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("run", help="run name, e.g. r00-baseline or r01-o6-prefix-cache-off")
     parser.add_argument(
+        "--model", choices=list(MODELS), default=DEFAULT_MODEL,
+        help="model the server serves; must match its served model name (default: %(default)s)",
+    )
+    parser.add_argument(
         "--concurrency", default=",".join(map(str, DEFAULT_CONCURRENCIES)),
         help="comma-separated concurrencies (default: %(default)s)",
     )
@@ -142,7 +164,8 @@ def main() -> int:
     points = [(r, c) for r in range(1, args.repeats + 1) for c in concurrencies]
     if args.dry_run:
         for r, c in points:
-            print(shlex.join(aiperf_command(aiperf, args.url, c, traces_dir / f"rep{r}" / f"c{c}")))
+            point_dir = traces_dir / f"rep{r}" / f"c{c}"
+            print(shlex.join(aiperf_command(aiperf, args.model, args.url, c, point_dir)))
         return 0
 
     check_health(args.url)
@@ -162,7 +185,8 @@ def main() -> int:
         print(f"\n{label}: starting at {now()}, writing to {point_dir}", flush=True)
         start = now()
         try:
-            code = subprocess.run(aiperf_command(aiperf, args.url, c, point_dir)).returncode
+            command = aiperf_command(aiperf, args.model, args.url, c, point_dir)
+            code = subprocess.run(command).returncode
         except KeyboardInterrupt:
             with progress.open("a") as f:
                 f.write(f"{start}\t{now()}\t{r}\t{c}\tinterrupted\n")
