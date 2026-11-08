@@ -100,7 +100,9 @@ r00-baseline sweep ─> choose C ─> 1 Predict ─> 2 Start ─> 3 Perf at C �
    reports: KV cache tokens, CUDA graph memory, and the kernels it picked
    ([getting-started step 8](getting-started.md#8-start-the-server)).
 3. **Perf.** AIPerf replays the coding-agent traces at C, then runs two short
-   phase probes. See [3. Perf run](#3-perf-run).
+   phase probes. Read the point's table, `profile_export_console.txt`, as in
+   [What to read from a perf run](#what-to-read-from-a-perf-run). See
+   [3. Perf run](#3-perf-run).
 4. **Quality.** Run the A1 smoke tests, then a 50-task SWE-bench slice. See
    [4. Quality run](#4-quality-run).
 5. **Record.** Add rows to `results/perf.csv` and `results/quality.csv`, and an
@@ -306,6 +308,22 @@ cancels a point, so the script counts that point as done and skips it on a
 rerun. For each point listed, read its `logs/aiperf.log`, delete its folder
 (for example `rm -r ~/runs/r00-baseline/traces/rep1/c8`), and rerun the
 step 6 command. It measures only the missing points.
+
+**10. tmux: read each point's table.** When a point finishes, AIPerf saves
+the table it showed live as `profile_export_console.txt` in that point's
+folder. [What to read from a perf run](#what-to-read-from-a-perf-run) explains
+each row.
+
+```bash
+# One point (here c1). less -S keeps the wide rows on one line; scroll with the
+# arrow keys and quit with q.
+less -S ~/runs/r00-baseline/traces/rep1/c1/profile_export_console.txt
+
+# Every point of the sweep, one after another.
+for f in ~/runs/r00-baseline/traces/rep1/c*/profile_export_console.txt; do
+  echo "== $f"; cat "$f"
+done | less -S
+```
 
 #### Choose the operating concurrency
 
