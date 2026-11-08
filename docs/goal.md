@@ -6,27 +6,27 @@ end. The aim is to prepare for an applied AI role on the **Eigen team**
 
 From **Mon 2026-11-02 to Fri 2026-11-20**:
 
-- Serve **DeepSeek-V4.1-Flash-1017** for a **coding-agent** workload on one
-  **8×B200** node with vLLM.
+- Serve **DeepSeek-V4-Flash-0731** for a **coding-agent** workload on one
+  **B300** GPU with vLLM.
+- Measure a baseline across load, then pick one operating point.
 - Put every change through one loop:
   1. A perf run on coding-agent traces.
   2. A quality run on coding tasks.
   3. A gap analysis that decides whether prefill or decode gets the next
      change.
-- Optimize against latency and throughput targets without losing quality, and
-  explain every gain with a measurement.
+- Explain every gain with a measurement.
 
 The core artifacts:
 
-- A hand-written analytical model that predicts throughput and latency,
-  checked against measurements, with every material gap explained by a
-  profile.
-- A packaged, reproducible endpoint configuration with its measured targets
-  and quality results.
+- A hand-written analytical model that predicts latency, checked against
+  measurements, with every material gap explained by a profile.
+- A packaged, reproducible endpoint configuration with its measured results
+  and quality checks.
 
-This is a learning project: documentation first, then code and results.
+This is a learning project: documentation first, then code and results. Keep
+it simple: one GPU, one server, one change at a time.
 
-**Key decisions:** [ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md).
+**Key decisions:** [ADR 0003](adr/0003-deepseek-v4-flash-0731-on-1xb300-with-vllm.md).
 **Plan and done criteria:** [poc.md](poc.md).
 **After the PoC:** [skills-plan.md](skills-plan.md).
 
@@ -34,43 +34,37 @@ This is a learning project: documentation first, then code and results.
 
 | # | Phase | What | Kiely, *Inference Engineering* |
 |---|---|---|---|
-| 1 | Bring-up and run 0 (week 1) | Work out the memory plan from `config.json` before touching the GPUs. Bring up two TP4 replicas from the recipe. Write the analytical model's predictions and analyze the agent traces. Then put the baseline through the loop: the trace sweep with 3 repeats, the prefill and decode probes, the smoke tests and the baseline SWE-bench slice | §1.4, §2.4, Ch. 3, §4.3.1, §4.5 |
-| 2 | Prefill and decode runs (Mon 11-09 – Sun 11-15) | One knob per run, chosen by the previous run's gap analysis. Prefill side: prefix caching and the chunked-prefill token budget. Decode side: parallel layout (2×TP4 vs TP8 vs DEP8), batch and CUDA graph sizes, DSpark speculative decoding, Engram placement, NUMA pinning and KV cache dtype. Every run gets a perf run, a quality run and a log entry. Take the prefill-heavy and decode-heavy profiles | §2.4, §5.1–§5.4 |
-| 3 | PD disaggregation (Mon 11-16 – Tue 11-17) | Turn the two TP4 GPU groups into one prefill engine and one decode engine (1P1D, KV over NVLink via NIXL). Compare with the aggregated 2×TP4 layout at both target profiles, then apply the decision rule | §5.5 |
-| 4 | Final configuration, packaging, write-up (Wed 11-18 – Fri 11-20) | Put the final configuration through the loop, plus the paired SWE-bench comparison with run 0 and the DSpark lossless check. Package the endpoint. Write the results up and present them. Release the node | §5.1.3, §7.1, §7.2.1, §7.4.2 |
-| 5 | Skills (after 2026-11-20) | Turn the PoC's procedure into two shareable Claude skills, `prefill-optimization` and `decode-optimization`. Test them on a model or GPU the PoC didn't use. See the [skills plan](skills-plan.md) | §2.4, §5.5 |
+| 1 | Bring-up and baseline (Sun 11-08 – Mon 11-09) | Start the server from the recipe's single-GPU settings. Write the analytical model's predictions. Run the trace sweep once (concurrency 1–32), the prefill and decode probes, and the quality checks. Choose the operating concurrency from the sweep | §1.4, §2.4, §4.5 |
+| 2 | Prefill and decode runs (Tue 11-10 – Tue 11-17) | One knob per run at the operating concurrency, chosen by the previous run's gap analysis. Prefill side: prefix caching and the chunked-prefill token budget. Decode side: speculative decoding (DSpark, MTP), batch and CUDA graph sizes, the MoE kernel, KV cache dtype and GPU memory use. Every run gets a perf run, a quality run and a log entry. Take a prefill-heavy and a decode-heavy profile | §2.4, §5.1–§5.4 |
+| 3 | Final configuration and write-up (Wed 11-18 – Fri 11-20) | Put the final configuration through the loop, plus the paired SWE-bench comparison with the baseline and the speculative-decoding lossless check. Package the endpoint and write the results up | §5.1.3, §7.2.1 |
+| 4 | Skills (after 2026-11-20) | Turn the PoC's procedure into two shareable Claude skills, `prefill-optimization` and `decode-optimization`. Test them on a model or GPU the PoC didn't use. See the [skills plan](skills-plan.md) | §2.4, §5.5 |
 
 ## Done when
 
 See the checklist in [poc.md](poc.md#done-when). In short:
 
-- The baseline and final configuration are both measured against the
-  interactive and async targets, with zero failed requests.
+- The baseline sweep is complete with zero failed requests, and the operating
+  concurrency is chosen with a written reason.
 - Every run went through the loop, and each is logged with a prediction, perf
   and quality results, a gap analysis and a decision.
-- PD disaggregation (1P1D) is measured against the aggregated 2×TP4 layout,
-  with a recorded decision, or a documented reason it couldn't run.
-- The final configuration beats the baseline on one profile. The target is
-  ≥ 1.3×, which is a judgment call.
-- The final configuration passes every quality gate.
-- The analytical model matches decode within about 25% at five or more
-  concurrency points (also a judgment call), with gaps explained by profiles.
-- The packaged endpoint and the write-up are done, and the node is released by
-  2026-11-20.
+- The final configuration beats the baseline at the operating concurrency and
+  passes every quality check.
+- The analytical model matches decode within about 25% at five or more batch
+  sizes (a judgment call), with gaps explained by profiles.
+- The packaged endpoint and the write-up are done.
 
 ## Non-goals
 
-- Multi-node serving. One node only, though TP and EP within it are in scope.
+- More than one GPU: tensor or expert parallelism across GPUs, extra
+  replicas, prefill/decode disaggregation.
 - Comparing inference engines (vLLM only).
-- Re-quantizing the model. The official MXFP4/MXFP8 checkpoint is used as
-  shipped; NVFP4 variants need Blackwell.
-- Image and video inputs; serving is text only.
+- Re-quantizing the model. The official FP8/FP4 checkpoint is used as shipped.
+- Image and video inputs. The model is text only.
 - Production SLOs, multi-tenancy, autoscaling.
-- A B300 comparison. It is an optional stretch, not a requirement.
 
-## Paused
+## Earlier plans
 
-The earlier plan, which measured decode on 1×B300 (Qwen3.8-27B, then
-Qwen3.8-Flash-Next), is paused. Its decisions stay in
-[ADR 0001](adr/0001-qwen3.8-flash-next-on-1xb300-with-vllm.md), and the B300
-guide is in git history.
+- **DeepSeek-V4.1-Flash-1017 on 8×B200** ([ADR 0002](adr/0002-coding-agent-poc-deepseek-v4.1-flash-on-8xb200-with-vllm.md)):
+  superseded on 2026-11-08, when the node went away.
+- **Qwen3.8 on 1×B300** ([ADR 0001](adr/0001-qwen3.8-flash-next-on-1xb300-with-vllm.md)):
+  paused. Its measurement protocol still applies.

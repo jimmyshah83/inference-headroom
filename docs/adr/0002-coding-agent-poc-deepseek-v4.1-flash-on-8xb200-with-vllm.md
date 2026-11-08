@@ -1,6 +1,8 @@
 # ADR 0002: Coding-agent PoC: DeepSeek-V4.1-Flash-1017 on one 8×B200 node with vLLM
 
-- **Status:** Proposed
+- **Status:** Superseded on 2026-11-08 by
+  [ADR 0003](0003-deepseek-v4-flash-0731-on-1xb300-with-vllm.md). The 8×B200
+  node is gone, and the PoC moved to DeepSeek-V4-Flash-0731 on one B300.
 - **Date:** 2026-11-02, revised 2026-11-03. The hardware changed from 8×H200
   to 8×B200, the baseline took on the vLLM recipe's B200 settings, and the
   engine moved from vLLM v0.32.0 to v0.33.0.
@@ -164,7 +166,7 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
    `1bae0e1088993b9b82de08f59de5be5a34e42170`, text only
    (`--language-model-only`), with the `deepseek_v41` tool-call and reasoning
    parsers. Image input is a later step on one TP8 replica, after the text
-   work ([poc.md](../poc.md#later-image-input-on-one-tp8-replica)).
+   work (in `poc.md` before ADR 0003; see git history).
 3. **Baseline layout:** two TP4 replicas with the recipe's B200 settings from
    the reference configuration:
    - `FLASHINFER_MLA_SPARSE_DSV41` attention with an MXFP4 indexer
@@ -193,7 +195,7 @@ updated 2026-10-25, and the [model card](https://huggingface.co/deepseek-ai/Deep
      engine and one decode engine (1P1D, KV over NVLink via NIXL, behind
      `vllm-router`). It is compared with the aggregated layout on the same 8
      GPUs and adopted per target profile only if it passes the decision rule
-     in [poc.md](../poc.md#pd-disaggregation).
+     in `poc.md` before ADR 0003 (see git history).
 5. **Workloads:**
    - synthetic fixed shapes (8k/1k, 64k/2k)
    - synthetic multi-turn conversations with a shared prefix
