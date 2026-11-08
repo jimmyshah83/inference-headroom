@@ -276,39 +276,6 @@ step 6 command. It measures only the missing points.
 mkdir -p runs/r00-baseline && scp -r b200-usc1:runs/r00-baseline/traces runs/r00-baseline/
 ```
 
-**11. Mac, repo root: combine the repeats.** AIPerf summarizes each point on
-its own, so nothing combines `rep1`, `rep2` and `rep3`.
-[`scripts/aggregate_sweep.py`](../scripts/aggregate_sweep.py) does. It reads
-only the copied output and sends nothing to the node.
-
-```bash
-python scripts/aggregate_sweep.py r00-baseline
-```
-
-It prints one line per concurrency and writes
-`runs/r00-baseline/traces/aggregate.csv`, with one row per concurrency and
-metric: each repeat's value, the mean, the spread and, for latencies, the
-pooled value.
-
-- **Spread** is max − min across the repeats, as a % of the mean. Run 0's
-  spread is the noise floor for the 2× rule (see **Run 0 only** below).
-- **Pooled** is the TTFT, ITL or request-latency percentile of all the
-  repeats' requests together. The mean of three p90s isn't the p90 of their
-  requests, so use the pooled value as run 0's latency in `results/perf.csv`,
-  and the per-repeat values to judge the noise. Throughput and goodput are
-  means.
-- **Invalid points.** It lists any point that was cancelled, is incomplete or
-  had a failed request, and exits 1. Fix those as in step 9 first.
-
-Every later run is compared with run 0's noise floor, so keep it in the repo:
-
-```bash
-mkdir -p results && cp runs/r00-baseline/traces/aggregate.csv results/noise.csv
-```
-
-For a later run, run the script with that run's name. With one pass it reports
-each point's values, with no spread.
-
 AIPerf can repeat a point itself (`--num-profile-runs`) and report the mean and
 confidence intervals, but the sweep doesn't use it. Its repeats run
 back-to-back, so they miss drift over hours. By default only the first repeat
@@ -374,9 +341,9 @@ warm-up. Those results were deleted, so no valid point has run yet.
 
 - **Run 0 only:** `--repeats 3` writes `traces/rep1`, `rep2` and `rep3`, to
   measure the noise between runs. Later runs use one pass. If a later run
-  differs from its reference by less than twice the baseline's spread at that
-  concurrency (`spread_pct` in `results/noise.csv`, step 11), repeat it before
-  you believe it (Kiely §4.5.2, p. 114).
+  differs from its reference by less than twice the spread between run 0's
+  repeats at that concurrency, repeat it before you believe it (Kiely §4.5.2,
+  p. 114).
 - **What each point writes** to `~/runs/<run>/traces/rep<r>/c<c>/` on the node:
   - `profile_export_aiperf.csv` and `.json`: the summary (TTFT, ITL, request
     latency, throughput, goodput), written when the point finishes
@@ -633,9 +600,6 @@ Summaries go in this repo:
   - goodput
   - prefix cache hit rate
   - mean queue, prefill and decode time per request (ms)
-
-  For run 0, take the trace rows from step 11's `aggregate.csv`: the pooled
-  latencies, and the mean throughput and goodput.
 - **`results/quality.csv`:** one row per run. Columns:
   - run, date
   - A1 passes out of 20, with thinking off and with thinking on
