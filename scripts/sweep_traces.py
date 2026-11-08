@@ -9,8 +9,8 @@ model, the run name, the concurrencies, the repeats and the URL can change.
 
 --model picks one of MODELS and must match the model the server serves. Runs
 of different models aren't comparable, so give each model its own run names.
-The default is DeepSeek-V4-Flash-0731 on 1×B300; run 0 (r00-baseline) used
-DeepSeek-V4.1-Flash-1017 on 8×B200.
+The default is DeepSeek-V4-Flash-0731 on 1×B300 (ADR 0003).
+DeepSeek-V4.1-Flash-1017 is the earlier 8×B200 plan's model (ADR 0002).
 
 Run it on the node, inside tmux, with AIPerf's venv active (docs/poc.md has the
 steps). From the Mac, the SSH tunnel dropped connections and skewed latency.
@@ -21,14 +21,18 @@ steps). From the Mac, the SSH tunnel dropped connections and skewed latency.
     # Test one point first.
     python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --concurrency 1
 
-    # Run 0: three repeats of the full sweep.
-    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --repeats 3
+    # The baseline: the full sweep (c = 1 to 32), once.
+    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs
 
-    # A later run: one repeat.
-    python ~/sweep_traces.py r01-o6-prefix-cache-off --runs-dir ~/runs
+    # Noise: two more repeats of the baseline at the operating concurrency C
+    # (8 here). Points already done are skipped, so this adds rep2 and rep3.
+    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --concurrency 8 --repeats 3
 
-    # The 8×B200 model instead of the default.
-    python ~/sweep_traces.py r00-baseline --runs-dir ~/runs --model deepseek-ai/DeepSeek-V4.1-Flash-1017
+    # A later run: one point at C.
+    python ~/sweep_traces.py r01-p1-prefix-cache-off --runs-dir ~/runs --concurrency 8
+
+    # The earlier plan's model instead of the default.
+    python ~/sweep_traces.py r00-v41 --runs-dir ~/runs --model deepseek-ai/DeepSeek-V4.1-Flash-1017
 
 Each point writes its AIPerf artifacts to
 <runs-dir>/<run>/traces/rep<r>/c<c>/, and the sweep appends one line per point
@@ -57,7 +61,7 @@ from pathlib import Path
 MODELS = {
     # 1×B300. 166.9 GB checkpoint; FP8 with 128×128 blocks; 1M context.
     "deepseek-ai/DeepSeek-V4-Flash-0731": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
-    # 8×B200. Run 0 (r00-baseline) used this one.
+    # 8×B200, the earlier plan (ADR 0002). Too large for one B300.
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": "1bae0e1088993b9b82de08f59de5be5a34e42170",
 }
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
@@ -110,7 +114,7 @@ def aiperf_command(
 
 
 def check_health(url: str) -> None:
-    """Stop early if the replica (or the SSH tunnel to it) isn't reachable."""
+    """Stop early if the server (or the SSH tunnel to it) isn't reachable."""
     try:
         with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=10) as resp:
             if resp.status == 200:
@@ -118,7 +122,7 @@ def check_health(url: str) -> None:
             reason = f"HTTP {resp.status}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = str(exc)
-    sys.exit(f"{url}/health failed ({reason}). Is the replica up and the tunnel open?")
+    sys.exit(f"{url}/health failed ({reason}). Is the server up?")
 
 
 def now() -> str:
@@ -130,7 +134,7 @@ def parse_args() -> argparse.Namespace:
         description="Run the coding-agent trace sweep with AIPerf (docs/poc.md, step 3).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("run", help="run name, e.g. r00-baseline or r01-o6-prefix-cache-off")
+    parser.add_argument("run", help="run name, e.g. r00-baseline or r01-p1-prefix-cache-off")
     parser.add_argument(
         "--model", choices=list(MODELS), default=DEFAULT_MODEL,
         help="model the server serves; must match its served model name (default: %(default)s)",
@@ -141,11 +145,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--repeats", type=int, default=1,
-        help="passes of the sweep; run 0 uses 3 to measure noise (default: %(default)s)",
+        help="passes of the sweep; 3 at the operating concurrency measures noise (default: %(default)s)",
     )
     parser.add_argument(
         "--url", default="http://localhost:8000",
-        help="replica to measure: replica A, or the router in O8 (default: %(default)s)",
+        help="server to measure (default: %(default)s)",
     )
     parser.add_argument(
         "--runs-dir", type=Path, default=RUNS_DIR,
