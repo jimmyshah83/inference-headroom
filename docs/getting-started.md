@@ -351,69 +351,6 @@ docker rm -f vllm-a
    `vllm/vllm-openai:v0.28.0`, the image the recipe uses on B300, and pin its
    digest once it works.
 
-#### CUDA graphs
-
-In decode, each step runs one token per request, so each kernel does little
-work. Launching hundreds of kernels from the CPU can then take longer than
-running them. A CUDA graph records one step's kernel launches at startup and
-replays them all with a single launch.
-
-- **A graph has a fixed shape.** vLLM captures one graph for each size in
-  `cudagraph_capture_sizes` (counted in tokens) and pads each step up to the
-  next captured size. A 9-request decode step runs in the 16-token graph, for
-  example. A step larger than the biggest size runs without a graph.
-- **Full graphs for decode, piecewise graphs for prefill.** In v0.33.0's
-  default mode, `FULL_AND_PIECEWISE`, a step where every request is decoding
-  replays one graph of the whole forward pass. A step with prefill in it runs
-  attention outside the graph.
-- **Breakable graphs, not torch.compile.** v0.33.0 turns on breakable CUDA
-  graphs for this model (`VLLM_USE_BREAKABLE_CUDAGRAPH=1`, listed for
-  `DeepseekV4ForCausalLM` in `vllm/config/vllm.py`). On V4.1 that also set the
-  compile mode to `NONE`, so torch.compile was off. Check the startup log for
-  the same here.
-- **Graphs cost memory and startup time.** That memory would otherwise go to
-  the KV cache. The log reports both.
-
-Experiment D2 changes `--max-num-seqs` and the capture sizes. D1 turns on
-speculative decoding, which makes each decode step 1 + drafts tokens per
-request, so it needs larger capture sizes.
-
-**Record these from the startup log:**
-
-- The KV cache memory, and how many tokens the KV cache can hold.
-- **Which MoE kernel was picked.** The baseline asks for DeepGEMM MegaMoE. The
-  kernel's math rate (FP4 or FP8) sets the compute ceiling for the experts in
-  the analytical model.
-- **Which attention backend was picked.**
-- How long the start took, split into weight loading and CUDA graph capture,
-  and how much GPU memory the CUDA graphs took.
-- **The scheduler and CUDA graph settings the defaults resolved to.** The
-  baseline leaves them unset, and vLLM picks some defaults by GPU, so these
-  are what experiments P2 and D2 change from: `max_num_batched_tokens`,
-  `max_num_seqs`, `cudagraph_capture_sizes` and the compile mode.
-
-```bash
-# Print the log lines that hold the scheduler and CUDA graph settings. The
-# engine config line is long; the values are inside it, and so is the compile
-# mode ('mode': <CompilationMode...>).
-docker logs vllm-a 2>&1 \
-  | grep -E 'max_num_seqs|max_num_batched_tokens|cudagraph_capture_sizes|max_cudagraph_capture_size'
-
-# Print warnings and the compile and CUDA graph lines, leaving out the long
-# config lines. "cuda ?graph" matches both "cudagraph" and "CUDA graph".
-docker logs vllm-a 2>&1 \
-  | grep -iE 'warn|compil|cuda ?graph|capturing|piecewise|eager' \
-  | grep -vE 'non-default args|Launching Rust frontend|Initializing a V1'
-
-# Print the kernel choices and the KV cache size.
-docker logs vllm-a 2>&1 \
-  | grep -iE 'moe backend|megamoe|mega_moe|attention backend|using .*backend|kv cache'
-```
-
-Run the searches again after `Application startup complete`, and record which
-CUDA graphs were captured, how long capture took, and how much memory the
-graphs use.
-
 ### 9. Test it from the Mac
 
 With `ssh b300-usn1-1` or `ssh -N b300-usn1-1` open:
